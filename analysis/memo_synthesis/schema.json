@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "buyside-memo-schema-v0.1.0",
+  "title": "Buyside Memo Data Schema",
+  "description": "Schema for structured VIC memo data extraction",
+  "type": "object",
+  "required": ["id", "url", "company_name", "position_type", "extracted_at"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique VIC idea identifier"
+    },
+    "url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Original VIC URL"
+    },
+    "company_name": {
+      "type": "string",
+      "description": "Company name as displayed"
+    },
+    "ticker": {
+      "type": ["string", "null"],
+      "description": "Stock ticker symbol"
+    },
+    "date": {
+      "type": ["string", "null"],
+      "description": "Publication date (ISO8601 preferred)"
+    },
+    "author_id": {
+      "type": ["string", "null"],
+      "description": "Author username (consider hashing for privacy)"
+    },
+    "position_type": {
+      "type": "string",
+      "enum": ["long", "short"],
+      "description": "Investment direction"
+    },
+    "quality_score": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 10,
+      "description": "VIC community quality rating (weak label)"
+    },
+    "quality_votes": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Number of quality votes"
+    },
+    "thesis_type": {
+      "type": ["string", "null"],
+      "enum": ["deep_value", "turnaround", "compounder", "short_fraud", "short_overearning", "short_structural", "special_situation", "other"],
+      "description": "Classified memo type (model-assisted extraction)"
+    },
+    "sector": {
+      "type": ["string", "null"],
+      "description": "GICS sector or industry (inferred from company name/description)"
+    },
+    "market_cap_bucket": {
+      "type": ["string", "null"],
+      "enum": ["micro", "small", "mid", "large", "mega", "unknown"],
+      "description": "Market cap category at time of writing"
+    },
+    "price_at_writing": {
+      "type": ["string", "null"],
+      "description": "Stock price when memo was published"
+    },
+    "target_price": {
+      "type": ["string", "null"],
+      "description": "Author's target price if stated"
+    },
+    "expected_return": {
+      "type": ["string", "null"],
+      "description": "Expected return percentage if stated"
+    },
+    "time_horizon": {
+      "type": ["string", "null"],
+      "description": "Investment time horizon if stated"
+    },
+    "catalysts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "description": {"type": "string"},
+          "timing": {"type": ["string", "null"]},
+          "measurable": {"type": "boolean"},
+          "category": {
+            "type": "string",
+            "enum": ["earnings", "strategic", "regulatory", "management", "market", "other"]
+          }
+        }
+      },
+      "description": "Structured catalyst extraction"
+    },
+    "valuation_methods": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["ev_ebitda", "pe", "dcf", "fcf_yield", "nav", "sum_of_parts", "relative", "other"]
+      },
+      "description": "Valuation methods used in memo"
+    },
+    "risk_factors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "factor": {"type": "string"},
+          "is_kill_condition": {"type": "boolean"},
+          "has_mitigant": {"type": "boolean"}
+        }
+      },
+      "description": "Risk factors with kill condition flags"
+    },
+    "evidence_types": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["sec_filings", "channel_checks", "mgmt_calls", "industry_data", "alt_data", "primary_research", "sellside", "other"]
+      },
+      "description": "Types of evidence cited"
+    },
+    "word_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total word count of description_text"
+    },
+    "section_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of distinct sections identified"
+    },
+    "has_variant_view": {
+      "type": "boolean",
+      "description": "Whether memo articulates what market is missing"
+    },
+    "variant_view_proven": {
+      "type": ["boolean", "null"],
+      "description": "Whether variant view is supported with evidence (not just asserted)"
+    },
+    "has_position_sizing": {
+      "type": "boolean",
+      "description": "Whether memo mentions position size or portfolio fit"
+    },
+    "has_exit_criteria": {
+      "type": "boolean",
+      "description": "Whether memo defines when to exit"
+    },
+    "description_text": {
+      "type": "string",
+      "description": "Full memo text"
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "author": {"type": "string"},
+          "date": {"type": "string"},
+          "body_text": {"type": "string"},
+          "is_rebuttal": {"type": "boolean"},
+          "is_author_response": {"type": "boolean"}
+        }
+      },
+      "description": "Discussion comments"
+    },
+    "comment_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "has_author_updates": {
+      "type": "boolean",
+      "description": "Whether author posted follow-up comments"
+    },
+    "extracted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Extraction timestamp"
+    },
+    "raw_html_path": {
+      "type": ["string", "null"],
+      "description": "Path to source HTML file"
+    }
+  },
+  "_extraction_notes": {
+    "thesis_type": "Use LLM classification with few-shot examples",
+    "sector": "Infer from company name + description text using industry keywords",
+    "catalysts": "Extract from CATALYST section if present, else scan for timing words",
+    "valuation_methods": "Regex for 'EV/EBITDA', 'P/E', 'DCF', etc.",
+    "risk_factors": "Extract from RISK section, flag 'kill condition' if mentions exit trigger",
+    "evidence_types": "Keyword detection: '10-K', 'channel check', 'spoke with management', etc.",
+    "has_variant_view": "Look for 'market is missing', 'mispriced', 'edge', 'what the street gets wrong'",
+    "variant_view_proven": "Check if variant claim is followed by supporting evidence"
+  },
+  "_data_quality_checks": [
+    "Reject if description_text is empty or <50 characters",
+    "Flag if quality_score is null for memos >500 words (extraction failure)",
+    "Warn if date cannot be parsed",
+    "Validate ticker against known exchange symbols"
+  ]
+}

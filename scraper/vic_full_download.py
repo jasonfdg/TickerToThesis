@@ -14,9 +14,10 @@ from playwright.sync_api import sync_playwright
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent
-RAW_DIR = PROJECT_ROOT / "data" / "raw"
-STRUCTURED_DIR = PROJECT_ROOT / "data" / "structured"
-FULL_INDEX_FILE = PROJECT_ROOT / "data" / "full_index.json"
+RAW_DIR = PROJECT_ROOT / "data" / "vic" / "raw"
+STRUCTURED_DIR = PROJECT_ROOT / "data" / "vic" / "structured"
+FULL_INDEX_FILE = PROJECT_ROOT / "data" / "vic" / "index" / "full_index.json"
+WINNERS_INDEX_FILE = PROJECT_ROOT / "data" / "vic" / "index" / "winners_index.json"
 COOKIES_FILE = PROJECT_ROOT / "cookies.json"  # Root cookies file
 
 RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -201,8 +202,26 @@ def extract_full_content(page, idea: dict) -> dict:
     }
 
     try:
-        page.goto(idea["url"], wait_until="domcontentloaded", timeout=45000)
-        page.wait_for_timeout(4000)
+        # Use networkidle to wait for all resources to load
+        page.goto(idea["url"], wait_until="networkidle", timeout=60000)
+
+        # Wait for critical content elements
+        content_loaded = False
+        try:
+            page.wait_for_selector('#description', timeout=15000)
+            content_loaded = True
+        except:
+            try:
+                page.wait_for_selector('.idea_by, .idea_name', timeout=10000)
+                content_loaded = True
+            except:
+                pass
+
+        # Additional wait to ensure JS rendering completes
+        if content_loaded:
+            page.wait_for_timeout(4000)
+        else:
+            page.wait_for_timeout(8000)
 
         # Save raw HTML
         html_content = page.content()
@@ -544,17 +563,70 @@ def load_full_index() -> list:
     return []
 
 
-def run_full_download(rediscover: bool = True, delay: float = 2.5):
+def load_winners_index() -> list:
+    """Load winners index if available."""
+    if WINNERS_INDEX_FILE.exists():
+        with open(WINNERS_INDEX_FILE, "r") as f:
+            data = json.load(f)
+        return data.get("winners", [])
+    return []
+
+
+def is_after_cutoff(date_str: str, cutoff_date: str = "August 1, 2025") -> bool:
+    """
+    Check if a date string is after the cutoff date.
+    VIC uses format like "March 26, 2023" or "August 09, 2007".
+    """
+    if not date_str:
+        return False
+
+    try:
+        from datetime import datetime
+        # Parse VIC date format: "Month DD, YYYY"
+        idea_date = datetime.strptime(date_str, "%B %d, %Y")
+        cutoff = datetime.strptime(cutoff_date, "%B %d, %Y")
+        return idea_date > cutoff
+    except ValueError:
+        # If we can't parse the date, allow it through
+        return False
+
+
+def is_rate_limited(result: dict, html_path: Path = None) -> bool:
+    """
+    Detect if a page was rate-limited by VIC.
+    Rate-limited pages have:
+    - Empty or very short description_text (< 100 chars)
+    - Small HTML file (~28KB)
+    """
+    desc = result.get("description_text", "")
+    if len(desc) < 100:
+        return True
+
+    # Also check HTML file size if available
+    if html_path and html_path.exists():
+        size_kb = html_path.stat().st_size / 1024
+        if size_kb < 35:  # Rate-limited pages are ~28KB
+            return True
+
+    return False
+
+
+def run_full_download(rediscover: bool = True, delay: float = 5.0, winners_only: bool = False):
     """
     Run the full VIC database download.
 
     Args:
         rediscover: If True, re-run Year × Alphabet discovery
         delay: Delay between requests in seconds
+        winners_only: If True, only extract contest winners from winners_index.json
     """
     print("=" * 70)
-    print("  VIC FULL DATABASE DOWNLOADER")
-    print("  Year × Alphabet Matrix Discovery + Full Content Extraction")
+    if winners_only:
+        print("  VIC WINNERS DOWNLOADER")
+        print("  Contest Winners Extraction")
+    else:
+        print("  VIC FULL DATABASE DOWNLOADER")
+        print("  Year × Alphabet Matrix Discovery + Full Content Extraction")
     print("=" * 70)
     print()
 
@@ -594,14 +666,22 @@ def run_full_download(rediscover: bool = True, delay: float = 2.5):
         print("  PHASE 1: IDEA DISCOVERY")
         print("=" * 70)
 
-        existing_index = load_full_index()
-
-        if existing_index and not rediscover:
-            print_status(f"Using existing index with {len(existing_index):,} ideas")
-            ideas = existing_index
+        if winners_only:
+            ideas = load_winners_index()
+            if not ideas:
+                print_status("ERROR: No winners index found at data/winners_index.json")
+                print_status("Run winner discovery first.")
+                browser.close()
+                return
+            print_status(f"Using winners index with {len(ideas):,} contest winners")
         else:
-            ideas = discover_ideas_year_alphabet(page)
-            save_full_index(ideas)
+            existing_index = load_full_index()
+            if existing_index and not rediscover:
+                print_status(f"Using existing index with {len(existing_index):,} ideas")
+                ideas = existing_index
+            else:
+                ideas = discover_ideas_year_alphabet(page)
+                save_full_index(ideas)
 
         # Phase 2: Content Extraction
         print("\n" + "=" * 70)
@@ -612,16 +692,56 @@ def run_full_download(rediscover: bool = True, delay: float = 2.5):
         successful = 0
         failed = 0
 
-        print_status(f"Extracting full content for {total:,} ideas...")
+        # Skip already extracted ideas
+        existing_ids = {f.stem for f in STRUCTURED_DIR.glob("*.json")}
+        remaining = [i for i in ideas if i["id"] not in existing_ids]
+        skipped = total - len(remaining)
+
+        if skipped > 0:
+            print_status(f"Skipping {skipped:,} already extracted ideas")
+
+        print_status(f"Extracting {len(remaining):,} remaining ideas...")
         print_status(f"Raw HTML → data/raw/  |  Structured JSON → data/structured/")
         print()
 
-        for i, idea in enumerate(ideas):
+        rate_limited_count = 0
+
+        for i, idea in enumerate(remaining):
             # Progress bar
-            print_progress_bar(i + 1, total, f"Extracting")
+            print_progress_bar(i + 1, len(remaining), f"Extracting")
 
             try:
                 result = extract_full_content(page, idea)
+                raw_path = RAW_DIR / f"{idea['id']}.html"
+
+                # Check if rate-limited
+                if is_rate_limited(result, raw_path):
+                    rate_limited_count += 1
+                    # Delete bad files
+                    if raw_path.exists():
+                        raw_path.unlink()
+                    structured_path = STRUCTURED_DIR / f"{idea['id']}.json"
+                    if structured_path.exists():
+                        structured_path.unlink()
+
+                    if rate_limited_count >= 3:
+                        print(f"\n\n⚠️  Rate limit detected! ({rate_limited_count} consecutive blocked pages)")
+                        print("    Stopping as requested. Re-run with fresh cookies when ready.")
+                        browser.close()
+                        return
+                    continue
+
+                # Reset counter on success
+                rate_limited_count = 0
+
+                # Skip ideas after cutoff date (August 1, 2025) to avoid membership content gate
+                idea_date = result.get("date", "")
+                if is_after_cutoff(idea_date):
+                    print(f"\n    Skipping post-cutoff idea: {idea_date}")
+                    # Delete raw HTML since we don't want it
+                    if raw_path.exists():
+                        raw_path.unlink()
+                    continue
 
                 # Save structured JSON
                 structured_path = STRUCTURED_DIR / f"{idea['id']}.json"
@@ -636,8 +756,8 @@ def run_full_download(rediscover: bool = True, delay: float = 2.5):
             except Exception as e:
                 failed += 1
 
-            # Rate limiting
-            if i < total - 1:
+            # Rate limiting delay
+            if i < len(remaining) - 1:
                 time.sleep(delay)
 
         browser.close()
@@ -660,9 +780,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VIC Full Database Downloader")
     parser.add_argument("--no-rediscover", action="store_true",
                         help="Use existing index instead of rediscovering")
-    parser.add_argument("--delay", type=float, default=2.5,
-                        help="Delay between requests in seconds")
+    parser.add_argument("--delay", type=float, default=5.0,
+                        help="Delay between requests in seconds (default: 5.0)")
+    parser.add_argument("--winners-only", action="store_true",
+                        help="Only extract contest winners from winners_index.json")
 
     args = parser.parse_args()
 
-    run_full_download(rediscover=not args.no_rediscover, delay=args.delay)
+    run_full_download(rediscover=not args.no_rediscover, delay=args.delay, winners_only=args.winners_only)

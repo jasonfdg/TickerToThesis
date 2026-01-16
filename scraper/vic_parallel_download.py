@@ -32,6 +32,7 @@ from vic_full_download import (
     print_status,
     load_cookies,
     load_full_index,
+    is_rate_limited,
 )
 
 # Progress tracking
@@ -81,8 +82,30 @@ async def extract_full_content_async(page, idea: dict) -> dict:
     }
 
     try:
-        await page.goto(idea["url"], wait_until="domcontentloaded", timeout=45000)
-        await page.wait_for_timeout(4000)
+        # Use networkidle to wait for all resources to load
+        await page.goto(idea["url"], wait_until="networkidle", timeout=60000)
+
+        # Wait for critical content elements with generous timeout
+        content_loaded = False
+        try:
+            # Wait for the description tab - this is the key content
+            await page.wait_for_selector('#description', timeout=15000)
+            content_loaded = True
+        except:
+            # Fallback: try waiting for any idea content
+            try:
+                await page.wait_for_selector('.idea_by, .idea_name', timeout=10000)
+                content_loaded = True
+            except:
+                pass
+
+        # Additional wait to ensure JS rendering completes
+        # Longer wait if content didn't load properly
+        if content_loaded:
+            await page.wait_for_timeout(4000)
+        else:
+            # Extra time for slow pages
+            await page.wait_for_timeout(8000)
 
         # Save raw HTML
         html_content = await page.content()
@@ -313,7 +336,7 @@ async def worker(semaphore, browser, cookies: list, idea: dict, delay: float, ma
 
 
 async def run_parallel_extraction(browser, ideas: list, cookies: list,
-                                   workers: int = 3, delay: float = 2.5):
+                                   workers: int = 2, delay: float = 5.0):
     """
     Run parallel extraction using async semaphore for concurrency control.
     """
@@ -342,9 +365,24 @@ async def run_parallel_extraction(browser, ideas: list, cookies: list,
 
     async def process_idea(idea):
         result = await worker(semaphore, browser, cookies, idea, delay)
+        raw_path = RAW_DIR / f"{idea['id']}.html"
+        structured_path = STRUCTURED_DIR / f"{idea['id']}.json"
+
+        # Check if rate-limited
+        if is_rate_limited(result, raw_path):
+            # Delete bad files
+            if raw_path.exists():
+                raw_path.unlink()
+            if structured_path.exists():
+                structured_path.unlink()
+
+            # Update progress (count as failed)
+            progress_state["completed"] += 1
+            progress_state["failed"] += 1
+            print_progress()
+            return result
 
         # Save result
-        structured_path = STRUCTURED_DIR / f"{idea['id']}.json"
         with open(structured_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
@@ -379,7 +417,7 @@ async def verify_authentication_async(page) -> bool:
         return False
 
 
-async def run_parallel_download_async(workers: int = 3, delay: float = 2.5):
+async def run_parallel_download_async(workers: int = 2, delay: float = 5.0):
     """Main async entry point."""
     print("=" * 70)
     print("  VIC PARALLEL DATABASE DOWNLOADER (Async)")
@@ -447,7 +485,7 @@ async def run_parallel_download_async(workers: int = 3, delay: float = 2.5):
     print("=" * 70)
 
 
-def run_parallel_download(workers: int = 3, delay: float = 2.5):
+def run_parallel_download(workers: int = 2, delay: float = 5.0):
     """Sync wrapper for async main."""
     asyncio.run(run_parallel_download_async(workers, delay))
 
@@ -460,23 +498,23 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python vic_parallel_download.py                    # 3 workers, 2.5s delay
-  python vic_parallel_download.py --workers 4       # 4 workers
-  python vic_parallel_download.py --delay 3.0       # Slower, safer
+  python vic_parallel_download.py                    # 2 workers, 5.0s delay (safe)
+  python vic_parallel_download.py --workers 3       # 3 workers (faster but riskier)
+  python vic_parallel_download.py --delay 7.0       # Slower, safer
   python vic_parallel_download.py --workers 1       # Sequential fallback
         """
     )
 
     parser.add_argument(
-        "--workers", type=int, default=3,
+        "--workers", type=int, default=2,
         choices=range(1, 6),
         metavar="N",
-        help="Number of parallel workers (1-5, default: 3)"
+        help="Number of parallel workers (1-5, default: 2)"
     )
 
     parser.add_argument(
-        "--delay", type=float, default=2.5,
-        help="Base delay between requests per worker in seconds (default: 2.5)"
+        "--delay", type=float, default=5.0,
+        help="Base delay between requests per worker in seconds (default: 5.0)"
     )
 
     args = parser.parse_args()

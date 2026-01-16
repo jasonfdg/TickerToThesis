@@ -16,9 +16,9 @@ from scraper.vic_auth import VICSession, load_cookies, COOKIES_FILE
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent
-RAW_DIR = PROJECT_ROOT / "data" / "raw"
-PARSED_DIR = PROJECT_ROOT / "data" / "parsed"
-INDEX_FILE = PROJECT_ROOT / "data" / "reports_index.json"
+RAW_DIR = PROJECT_ROOT / "data" / "vic" / "raw"
+PARSED_DIR = PROJECT_ROOT / "data" / "vic" / "parsed"
+INDEX_FILE = PROJECT_ROOT / "data" / "vic" / "index" / "reports_index.json"
 
 
 def ensure_dirs():

@@ -22,6 +22,7 @@ from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path
 from models import AgentRole
 from prompt_loader import PromptLoader
 from report_saver import ReportSaver
+from source_manager import SourceManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +42,7 @@ class ResumablePipeline:
         self.prompt_loader = PromptLoader()
         self.agent_runner = AgentRunner(self.config)
         self.report_saver = ReportSaver(self.ticker)
+        self.source_manager = SourceManager(self.ticker, self.prompt_loader)
 
     def _build_analyst_system_prompt(self, type_id: int) -> str:
         """Build the system prompt for an analyst agent."""
@@ -73,6 +75,9 @@ class ResumablePipeline:
         if not rd_review:
             raise RuntimeError(f"Missing RD review for type {type_id} v{prev_iteration}")
 
+        # Load accumulated source file
+        source_content = self.source_manager.get_source_content()
+
         return f"""## TICKER: {self.ticker}
 
 ## YOUR PREVIOUS ANALYSIS (v{prev_iteration})
@@ -85,9 +90,20 @@ class ResumablePipeline:
 
 ---
 
+## ACCUMULATED RESEARCH (Source File)
+This source file contains research accumulated from all analysts across previous iterations.
+Use it to inform your analysis and cite relevant sources.
+
+```json
+{source_content}
+```
+
+---
+
 ## TASK
 Produce your v{iteration} analysis incorporating the Research Director's feedback.
 Address their critiques directly. Strengthen weak areas. Maintain your investing philosophy perspective.
+Cite sources from the source file where relevant.
 """
 
     def _build_rd_review_system_prompt(self) -> str:
@@ -122,6 +138,62 @@ Address their critiques directly. Strengthen weak areas. Maintain your investing
 Please provide your Research Director critique following your framework.
 """
 
+    async def _update_sources_from_reports(
+        self,
+        analyst_results: dict,
+        iteration: int,
+        max_retries: int = 2,
+    ) -> bool:
+        """Update source file with sources from analyst reports."""
+        # Combine all successful reports
+        combined_content = ""
+        for type_id, report in analyst_results.items():
+            if report.is_success:
+                type_name = INVESTING_TYPES[type_id]["name"]
+                combined_content += f"\n\n## {type_name} Analyst (Iteration {iteration})\n"
+                combined_content += report.content
+
+        if not combined_content:
+            logger.warning("No successful reports to update sources from")
+            return False
+
+        for attempt in range(max_retries + 1):
+            update_prompt = self.source_manager.build_source_update_prompt(
+                combined_content,
+                report_type="analyst_reports",
+            )
+
+            call = AgentCall(
+                role=AgentRole.SOURCE_SUMMARY,
+                system_prompt=self.prompt_loader.source_summary_agent,
+                user_prompt=update_prompt,
+                iteration=iteration,
+                identifier=f"source_update_iter{iteration}_attempt{attempt}",
+            )
+
+            source_response = await self.agent_runner.run_single(call)
+
+            if not source_response.is_success:
+                logger.warning(f"Source summary agent failed: {source_response.error}")
+                if attempt < max_retries:
+                    continue
+                return False
+
+            update_success = self.source_manager.update_from_report(
+                combined_content,
+                source_response.content
+            )
+
+            if update_success:
+                logger.info(f"Source file updated successfully (iteration {iteration})")
+                return True
+
+            if attempt < max_retries:
+                logger.warning(f"Source update parsing failed, retrying...")
+
+        logger.error(f"Source file update failed after {max_retries + 1} attempts")
+        return False
+
     async def _run_iteration(self, iteration: int) -> None:
         """Run a single debate iteration (analysts + RD reviews)."""
         logger.info(f"{'='*60}")
@@ -150,6 +222,10 @@ Please provide your Research Director critique following your framework.
                 logger.info(f"  Analyst {type_id}: {report.token_usage.total_tokens:,} tokens")
             else:
                 logger.error(f"  Analyst {type_id} failed: {report.error}")
+
+        # Phase 1b: Update source file with new research
+        logger.info("Phase 1b: Updating source file...")
+        await self._update_sources_from_reports(analyst_results, iteration)
 
         # Phase 2: RD reviews
         logger.info(f"Phase 2: Running 6 RD review calls...")

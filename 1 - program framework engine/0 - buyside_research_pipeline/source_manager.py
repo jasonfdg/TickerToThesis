@@ -112,29 +112,170 @@ class SourceManager:
         self._cache = data
         logger.info(f"Saved source file: {self.source_file_path}")
 
-    def update_from_report(self, report_content: str, new_source_data: str) -> None:
+    def _extract_json_from_response(self, response: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract JSON from various LLM response formats.
+
+        Handles:
+        - Pure JSON
+        - Markdown-wrapped JSON (```json ... ```)
+        - JSON with text before/after
+        - Multiple JSON blocks (takes the largest/most complete)
+
+        Returns:
+            Parsed JSON dict or None if extraction fails
+        """
+        import re
+
+        if not response or not response.strip():
+            logger.warning("Empty response from source_summary_agent")
+            return None
+
+        # Strategy 1: Try direct JSON parse
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 2: Extract from markdown code blocks
+        json_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", response)
+        for block in json_blocks:
+            try:
+                parsed = json.loads(block)
+                if isinstance(parsed, dict) and "ticker" in parsed:
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+
+        # Strategy 3: Find JSON object by matching braces
+        # Look for outermost { ... } that contains "ticker"
+        brace_depth = 0
+        json_start = None
+        for i, char in enumerate(response):
+            if char == '{':
+                if brace_depth == 0:
+                    json_start = i
+                brace_depth += 1
+            elif char == '}':
+                brace_depth -= 1
+                if brace_depth == 0 and json_start is not None:
+                    potential_json = response[json_start:i+1]
+                    try:
+                        parsed = json.loads(potential_json)
+                        if isinstance(parsed, dict) and "ticker" in parsed:
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
+                    json_start = None
+
+        return None
+
+    def _validate_source_data(self, data: Dict[str, Any]) -> bool:
+        """Validate that parsed JSON has required structure."""
+        required_fields = ["ticker", "sources"]
+        for field in required_fields:
+            if field not in data:
+                logger.warning(f"Source data missing required field: {field}")
+                return False
+
+        if not isinstance(data.get("sources"), list):
+            logger.warning("Source data 'sources' field is not a list")
+            return False
+
+        return True
+
+    def _merge_sources_incrementally(self, new_sources: List[Dict]) -> None:
+        """
+        Fallback: merge new sources into existing file incrementally.
+        Used when full JSON update fails but we can extract sources list.
+        """
+        current_data = self.load_source_file()
+        existing_urls = {
+            self._normalize_url(s.get("url", ""))
+            for s in current_data.get("sources", [])
+        }
+
+        # Find max source ID
+        max_id = 0
+        for src in current_data.get("sources", []):
+            if src.get("id", "").startswith("src_"):
+                try:
+                    num = int(src["id"].replace("src_", ""))
+                    max_id = max(max_id, num)
+                except ValueError:
+                    pass
+
+        added_count = 0
+        for new_src in new_sources:
+            new_url = self._normalize_url(new_src.get("url", ""))
+            if new_url and new_url not in existing_urls:
+                max_id += 1
+                new_src["id"] = f"src_{max_id:03d}"
+                new_src["added_at"] = datetime.now().isoformat()
+                current_data.setdefault("sources", []).append(new_src)
+                existing_urls.add(new_url)
+                added_count += 1
+
+        if added_count > 0:
+            self.save_source_file(current_data)
+            logger.info(f"Incrementally added {added_count} new sources")
+
+    def _normalize_url(self, url: str) -> str:
+        """Normalize URL for deduplication."""
+        if not url:
+            return ""
+        url = url.lower().strip()
+        url = url.rstrip("/")
+        # Remove tracking params
+        import re
+        url = re.sub(r"[?&](utm_\w+|ref|source)=[^&]*", "", url)
+        # Remove www prefix
+        url = re.sub(r"^https?://(www\.)?", "https://", url)
+        return url
+
+    def update_from_report(self, report_content: str, new_source_data: str) -> bool:
         """
         Update source file with new data from source_summary_agent.
 
         Args:
             report_content: The analyst/RD report that generated new sources
             new_source_data: JSON string from source_summary_agent
-        """
-        try:
-            new_data = json.loads(new_source_data)
-            self.save_source_file(new_data)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse source update: {e}")
-            # Try to extract JSON from the response if it's wrapped in markdown
-            import re
 
-            json_match = re.search(r"```json\s*(.*?)\s*```", new_source_data, re.DOTALL)
-            if json_match:
-                try:
-                    new_data = json.loads(json_match.group(1))
-                    self.save_source_file(new_data)
-                except json.JSONDecodeError:
-                    logger.error("Failed to extract valid JSON from markdown block")
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        # Clear cache to ensure we're working with fresh data
+        self.clear_cache()
+
+        # Try to extract JSON from the response
+        new_data = self._extract_json_from_response(new_source_data)
+
+        if new_data is None:
+            logger.error(
+                f"Failed to extract JSON from source_summary_agent response. "
+                f"Response length: {len(new_source_data)} chars, "
+                f"First 200 chars: {new_source_data[:200]!r}"
+            )
+            return False
+
+        # Validate the extracted data
+        if not self._validate_source_data(new_data):
+            logger.error("Source data validation failed, attempting incremental merge")
+
+            # Fallback: try to extract just the sources array
+            sources = new_data.get("sources", [])
+            if sources:
+                self._merge_sources_incrementally(sources)
+                return True
+            return False
+
+        # Full update succeeded
+        self.save_source_file(new_data)
+        logger.info(
+            f"Source file updated: {new_data.get('source_count', len(new_data.get('sources', [])))} sources, "
+            f"{len(new_data.get('research_context', {}).get('research_iterations', []))} iterations"
+        )
+        return True
 
     def get_source_content(self) -> str:
         """
@@ -221,11 +362,15 @@ class SourceManager:
 5. Log this iteration in research_iterations
 6. Output the complete updated JSON
 
-Remember:
-- Never delete existing sources
-- Deduplicate by normalized URL
-- Preserve the audit trail in the reason field
-- Output ONLY the complete JSON, no other text
+## CRITICAL OUTPUT REQUIREMENTS
+- Output ONLY valid JSON - no explanation, no markdown formatting, no text before or after
+- Start your response with {{ and end with }}
+- The JSON must be parseable by json.loads()
+- Include the complete source file structure with all existing + new sources
+- Do not wrap in ```json``` code blocks
+
+Example of correct output format:
+{{"ticker": "{self.ticker}", "last_updated": "...", "sources": [...], ...}}
 """
 
         return prompt

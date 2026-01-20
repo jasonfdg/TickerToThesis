@@ -494,8 +494,19 @@ Output the complete polished memo.
         self,
         reports: Dict[int, AgentReport],
         iteration: int,
-    ) -> None:
-        """Update source file with sources from analyst reports."""
+        max_retries: int = 2,
+    ) -> bool:
+        """
+        Update source file with sources from analyst reports.
+
+        Args:
+            reports: Dict of analyst reports by type_id
+            iteration: Current iteration number
+            max_retries: Number of retries if source update fails
+
+        Returns:
+            True if source file was updated successfully
+        """
         # Combine all successful reports into one update
         combined_content = ""
         for type_id, report in reports.items():
@@ -506,29 +517,49 @@ Output the complete polished memo.
 
         if not combined_content:
             logger.warning("No successful reports to update sources from")
-            return
+            return False
 
-        # Build source update prompt
-        update_prompt = self.source_manager.build_source_update_prompt(
-            combined_content,
-            report_type="analyst_reports",
-        )
+        for attempt in range(max_retries + 1):
+            # Build source update prompt
+            update_prompt = self.source_manager.build_source_update_prompt(
+                combined_content,
+                report_type="analyst_reports",
+            )
 
-        # Run source summary agent
-        call = AgentCall(
-            role=AgentRole.SOURCE_SUMMARY,
-            system_prompt=self.prompt_loader.source_summary_agent,
-            user_prompt=update_prompt,
-            iteration=iteration,
-        )
+            # Run source summary agent
+            call = AgentCall(
+                role=AgentRole.SOURCE_SUMMARY,
+                system_prompt=self.prompt_loader.source_summary_agent,
+                user_prompt=update_prompt,
+                iteration=iteration,
+                identifier=f"source_update_iter{iteration}_attempt{attempt}",
+            )
 
-        source_response = await self.agent_runner.run_single(call)
+            source_response = await self.agent_runner.run_single(call)
 
-        if source_response.is_success:
-            self.source_manager.update_from_report(combined_content, source_response.content)
-            logger.info("Source file updated")
-        else:
-            logger.warning(f"Source update failed: {source_response.error}")
+            if not source_response.is_success:
+                logger.warning(f"Source summary agent failed: {source_response.error}")
+                if attempt < max_retries:
+                    logger.info(f"Retrying source update (attempt {attempt + 2}/{max_retries + 1})...")
+                    continue
+                return False
+
+            # Try to update from the response
+            update_success = self.source_manager.update_from_report(
+                combined_content,
+                source_response.content
+            )
+
+            if update_success:
+                logger.info(f"Source file updated successfully (iteration {iteration})")
+                return True
+
+            if attempt < max_retries:
+                logger.warning(f"Source update parsing failed, retrying (attempt {attempt + 2}/{max_retries + 1})...")
+            else:
+                logger.error(f"Source file update failed after {max_retries + 1} attempts")
+
+        return False
 
     async def run(self) -> str:
         """

@@ -132,7 +132,7 @@ class ProviderHealthTracker:
 
     # Fallback priority: CLI first (unlimited), then Claude API as last resort
     # OpenAI and Gemini are intentionally excluded - they fall back to Claude CLI only
-    FALLBACK_CHAIN = ["claude-cli", "claude"]
+    FALLBACK_CHAIN = ["claude", "claude-cli"]
 
     def __init__(self):
         self._health: Dict[str, ProviderHealth] = defaultdict(ProviderHealth)

@@ -130,9 +130,9 @@ class PipelineConfig:
 # 3 Claude + 3 OpenAI (Gemini excluded from analyst roles)
 # NOTE: Iteration 1 uses GPT-4o-mini for all analysts (see agent_runner.py)
 ANALYST_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
-    1: {"provider": "claude", "model": "sonnet"},      # Quality Compounders
-    2: {"provider": "claude", "model": "sonnet"},      # Imaginative Growth
-    3: {"provider": "claude", "model": "sonnet"},      # Fundamental L/S
+    1: {"provider": "claude-cli", "model": "sonnet"},  # Quality Compounders
+    2: {"provider": "claude-cli", "model": "sonnet"},  # Imaginative Growth
+    3: {"provider": "claude-cli", "model": "sonnet"},  # Fundamental L/S
     4: {"provider": "openai", "model": "gpt-4o"},      # Deep Value
     5: {"provider": "openai", "model": "gpt-4o"},      # Event-Driven
     6: {"provider": "openai", "model": "gpt-4o"},      # Macro-Tactical
@@ -143,9 +143,9 @@ ANALYST_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
 # Types 4-6: Gemini 2.5 Pro (best RD quality from benchmark)
 # Mixed providers enable 2x throughput via parallel rate limits
 RD_REVIEW_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
-    1: {"provider": "claude", "model": "sonnet"},           # Quality Compounders
-    2: {"provider": "claude", "model": "sonnet"},           # Imaginative Growth
-    3: {"provider": "claude", "model": "sonnet"},           # Fundamental L/S
+    1: {"provider": "claude-cli", "model": "sonnet"},       # Quality Compounders
+    2: {"provider": "claude-cli", "model": "sonnet"},       # Imaginative Growth
+    3: {"provider": "claude-cli", "model": "sonnet"},       # Fundamental L/S
     4: {"provider": "gemini", "model": "gemini-2.5-pro"},   # Deep Value
     5: {"provider": "gemini", "model": "gemini-2.5-pro"},   # Event-Driven
     6: {"provider": "gemini", "model": "gemini-2.5-pro"},   # Macro-Tactical

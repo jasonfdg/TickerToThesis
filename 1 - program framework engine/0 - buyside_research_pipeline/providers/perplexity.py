@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 
-from .base import BaseProvider, ProviderConfig, ProviderResponse
+from .base import BaseProvider, ProviderConfig, ProviderResponse, ProviderRateLimitError
 
 try:
     from ..models import TokenUsage
@@ -116,6 +116,12 @@ class PerplexityProvider(BaseProvider):
             )
 
         except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                logger.warning(f"Perplexity rate limit: {e}")
+                # Try to extract retry-after header
+                retry_after = e.response.headers.get("retry-after")
+                retry_seconds = float(retry_after) if retry_after else None
+                raise ProviderRateLimitError("perplexity", str(e), retry_after=retry_seconds)
             logger.error(f"Perplexity HTTP error: {e.response.status_code} - {e.response.text}")
             raise
         except Exception as e:

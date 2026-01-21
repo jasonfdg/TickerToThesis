@@ -15,7 +15,7 @@ import logging
 import random
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import anthropic
@@ -27,6 +27,7 @@ try:
     )
     from .models import AgentReport, AgentRole, TokenUsage
     from .providers import ProviderFactory, ProviderResponse
+    from .providers.base import ProviderRateLimitError
 except ImportError:
     from config import (
         PipelineConfig, ANALYST_PROVIDER_CONFIG, ROLE_PROVIDER_CONFIG,
@@ -34,6 +35,7 @@ except ImportError:
     )
     from models import AgentReport, AgentRole, TokenUsage
     from providers import ProviderFactory, ProviderResponse
+    from providers.base import ProviderRateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,148 @@ class AgentCall:
         effective_provider, effective_model = get_effective_provider(component, self.iteration)
         self.provider = self.provider or effective_provider
         self.model = self.model or effective_model
+
+
+@dataclass
+class ProviderHealth:
+    """Tracks health state for a single provider."""
+
+    is_rate_limited: bool = False
+    rate_limit_until: Optional[datetime] = None
+    consecutive_failures: int = 0
+
+    def mark_rate_limited(self, cooldown_seconds: float = 60.0):
+        """Mark provider as rate-limited with a cooldown period."""
+        self.is_rate_limited = True
+        self.rate_limit_until = datetime.now() + timedelta(seconds=cooldown_seconds)
+
+    def is_available(self) -> bool:
+        """Check if provider is available (not rate-limited or cooldown expired)."""
+        if not self.is_rate_limited:
+            return True
+        if self.rate_limit_until and datetime.now() > self.rate_limit_until:
+            self.is_rate_limited = False
+            return True
+        return False
+
+
+class ProviderHealthTracker:
+    """Tracks provider health and suggests fallbacks.
+
+    Manages rate limit cooldowns and provides intelligent fallback
+    suggestions when providers become unavailable.
+
+    Fallback strategy:
+    - Claude CLI is the primary fallback for ALL providers (unlimited with Max subscription)
+    - Claude API is the last resort (only when CLI fails)
+    - OpenAI/Gemini are NOT fallbacks for each other
+    """
+
+    # Fallback priority: CLI first (unlimited), then Claude API as last resort
+    # OpenAI and Gemini are intentionally excluded - they fall back to Claude CLI only
+    FALLBACK_CHAIN = ["claude-cli", "claude"]
+
+    def __init__(self):
+        self._health: Dict[str, ProviderHealth] = defaultdict(ProviderHealth)
+
+    def mark_rate_limited(self, provider: str, retry_after: Optional[float] = None):
+        """Mark a provider as rate-limited with optional cooldown from API."""
+        cooldown = retry_after or 60.0
+        self._health[provider].mark_rate_limited(cooldown)
+        logger.warning(f"Provider {provider} rate-limited, cooldown {cooldown:.0f}s")
+
+    def mark_success(self, provider: str):
+        """Mark a successful call - resets failure counter."""
+        self._health[provider].consecutive_failures = 0
+
+    def mark_failure(self, provider: str):
+        """Mark a failed call (non-rate-limit error)."""
+        self._health[provider].consecutive_failures += 1
+
+    def get_fallback(self, failed_provider: str, model: str) -> Optional[Tuple[str, str]]:
+        """Get next available fallback provider and mapped model.
+
+        Args:
+            failed_provider: The provider that just failed
+            model: The original model being used
+
+        Returns:
+            Tuple of (fallback_provider, fallback_model) or None if exhausted
+        """
+        for provider in self.FALLBACK_CHAIN:
+            if provider == failed_provider:
+                continue
+            if self._health[provider].is_available():
+                fallback_model = self._map_model(provider, model)
+                return provider, fallback_model
+        return None
+
+    def _map_model(self, provider: str, original_model: str) -> str:
+        """Map original model to equivalent for fallback provider.
+
+        Args:
+            provider: Target fallback provider
+            original_model: Original model name/alias
+
+        Returns:
+            Equivalent model for the fallback provider
+        """
+        # Claude CLI uses same model names as Claude API
+        if provider == "claude-cli":
+            if "sonnet" in original_model.lower():
+                return "sonnet"
+            if "opus" in original_model.lower():
+                return "opus"
+            if "haiku" in original_model.lower():
+                return "haiku"
+            return "sonnet"  # default
+
+        # Claude API
+        if provider == "claude":
+            if "gpt" in original_model.lower() or "gemini" in original_model.lower():
+                return "sonnet"  # Map other providers to sonnet
+            return original_model
+
+        # OpenAI
+        if provider == "openai":
+            return "gpt-4o"
+
+        # Gemini
+        if provider == "gemini":
+            return "gemini-2.5-pro"
+
+        return original_model
+
+    def get_shortest_cooldown(self) -> Optional[float]:
+        """Get shortest remaining cooldown across all rate-limited providers.
+
+        Returns:
+            Seconds until first provider becomes available, or None if all available
+        """
+        now = datetime.now()
+        cooldowns = []
+        for provider, health in self._health.items():
+            if health.is_rate_limited and health.rate_limit_until:
+                remaining = (health.rate_limit_until - now).total_seconds()
+                if remaining > 0:
+                    cooldowns.append(remaining)
+        return min(cooldowns) if cooldowns else None
+
+    def get_status_summary(self) -> Dict[str, str]:
+        """Get a summary of provider health status for logging."""
+        now = datetime.now()
+        summary = {}
+        for provider in self.FALLBACK_CHAIN:
+            health = self._health[provider]
+            if health.is_rate_limited and health.rate_limit_until:
+                remaining = (health.rate_limit_until - now).total_seconds()
+                if remaining > 0:
+                    summary[provider] = f"rate-limited ({remaining:.0f}s)"
+                else:
+                    summary[provider] = "available"
+            else:
+                summary[provider] = "available"
+        return summary
 
 
 class AgentRunner:
@@ -408,6 +552,7 @@ class MultiProviderRunner:
         self.config = config or PipelineConfig()
         self.provider_factory = ProviderFactory()
         self._semaphores: Dict[str, asyncio.Semaphore] = {}
+        self._health_tracker = ProviderHealthTracker()
 
     def _get_semaphore(self, provider: str) -> asyncio.Semaphore:
         """Get or create a rate-limiting semaphore for a provider."""
@@ -418,49 +563,111 @@ class MultiProviderRunner:
         return self._semaphores[provider]
 
     async def _make_api_call(self, call: AgentCall) -> Tuple[str, TokenUsage]:
-        """Make a single API call using the appropriate provider."""
+        """Make API call with automatic fallback on rate limits.
+
+        Never gives up - if all providers are rate-limited, waits and retries
+        until something works. This ensures the pipeline always completes.
+
+        Fallback chain: Primary Provider → Claude CLI → Other APIs → Wait → Retry
+        """
         provider = call.provider or "claude"
         model = call.model or "sonnet"
-        semaphore = self._get_semaphore(provider)
-        last_error = None
+        original_provider, original_model = provider, model
 
-        for attempt in range(self.config.max_retries):
-            try:
-                async with semaphore:
-                    response = await asyncio.wait_for(
-                        self.provider_factory.generate(
-                            provider_type=provider,
-                            model=model,
-                            system_prompt=call.system_prompt,
-                            user_prompt=call.user_prompt,
-                            max_tokens=self.config.max_tokens,
-                            temperature=self.config.temperature,
-                        ),
-                        timeout=self.config.single_call_timeout,
+        while True:  # Persistent retry loop - never give up
+            providers_tried: set = set()
+            current_provider, current_model = original_provider, original_model
+
+            while True:  # Inner loop: try all available providers
+                # Skip if already tried this provider in current round
+                if current_provider in providers_tried:
+                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
+                    if fallback and fallback[0] not in providers_tried:
+                        current_provider, current_model = fallback
+                        continue
+                    else:
+                        break  # Exhausted all options this round
+
+                providers_tried.add(current_provider)
+
+                # Check if provider is currently rate-limited
+                if not self._health_tracker._health[current_provider].is_available():
+                    logger.debug(f"Skipping {current_provider} (cooldown active)")
+                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
+                    if fallback and fallback[0] not in providers_tried:
+                        current_provider, current_model = fallback
+                        continue
+                    else:
+                        break
+
+                try:
+                    semaphore = self._get_semaphore(current_provider)
+                    async with semaphore:
+                        response = await asyncio.wait_for(
+                            self.provider_factory.generate(
+                                provider_type=current_provider,
+                                model=current_model,
+                                system_prompt=call.system_prompt,
+                                user_prompt=call.user_prompt,
+                                max_tokens=self.config.max_tokens,
+                                temperature=self.config.temperature,
+                            ),
+                            timeout=self.config.single_call_timeout,
+                        )
+
+                    self._health_tracker.mark_success(current_provider)
+                    logger.info(
+                        f"✓ {call.identifier} via {current_provider}/{current_model} "
+                        f"({response.token_usage.input_tokens} in, {response.token_usage.output_tokens} out)"
                     )
+                    return response.content, response.token_usage
 
-                logger.debug(
-                    f"API call {call.identifier} ({provider}/{model}) completed: "
-                    f"{response.token_usage.input_tokens} in, {response.token_usage.output_tokens} out"
-                )
+                except ProviderRateLimitError as e:
+                    self._health_tracker.mark_rate_limited(e.provider, e.retry_after)
+                    logger.warning(f"⚠ {e.provider} rate-limited, trying fallback...")
 
-                return response.content, response.token_usage
+                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
+                    if fallback and fallback[0] not in providers_tried:
+                        current_provider, current_model = fallback
+                        logger.info(f"↻ Falling back to {current_provider}/{current_model}")
+                        continue
+                    else:
+                        break  # No more fallbacks, will retry after wait
 
-            except Exception as e:
-                last_error = e
-                delay = min(
-                    self.config.retry_base_delay * (2**attempt) + random.uniform(0, 1),
-                    self.config.retry_max_delay,
-                )
-                logger.warning(
-                    f"Error for {call.identifier} ({provider}): {e}, "
-                    f"retrying in {delay:.1f}s (attempt {attempt + 1}/{self.config.max_retries})"
-                )
-                await asyncio.sleep(delay)
+                except asyncio.TimeoutError as e:
+                    self._health_tracker.mark_failure(current_provider)
+                    logger.warning(f"✗ {current_provider} timeout for {call.identifier}")
 
-        raise RuntimeError(
-            f"Failed after {self.config.max_retries} attempts for {call.identifier}: {last_error}"
-        )
+                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
+                    if fallback and fallback[0] not in providers_tried:
+                        current_provider, current_model = fallback
+                        logger.info(f"↻ Falling back to {current_provider}/{current_model}")
+                        continue
+                    else:
+                        break
+
+                except Exception as e:
+                    # Non-rate-limit error: mark failure but continue trying
+                    self._health_tracker.mark_failure(current_provider)
+                    logger.warning(f"✗ {current_provider} error: {e}")
+
+                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
+                    if fallback and fallback[0] not in providers_tried:
+                        current_provider, current_model = fallback
+                        logger.info(f"↻ Falling back to {current_provider}/{current_model}")
+                        continue
+                    else:
+                        break
+
+            # All providers exhausted this round - wait and retry
+            wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
+            status = self._health_tracker.get_status_summary()
+            logger.warning(
+                f"⏳ All providers exhausted for {call.identifier}. "
+                f"Status: {status}. Waiting {wait_time:.0f}s before retry..."
+            )
+            await asyncio.sleep(wait_time)
+            # Loop continues - will retry all providers
 
     async def run_single(self, call: AgentCall) -> AgentReport:
         """Run a single agent call using the appropriate provider."""

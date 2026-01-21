@@ -11,7 +11,7 @@ from typing import Optional
 
 import anthropic
 
-from .base import BaseProvider, ProviderConfig, ProviderResponse
+from .base import BaseProvider, ProviderConfig, ProviderResponse, ProviderRateLimitError
 
 try:
     from ..models import TokenUsage
@@ -90,7 +90,9 @@ class ClaudeProvider(BaseProvider):
 
         except anthropic.RateLimitError as e:
             logger.warning(f"Claude rate limit: {e}")
-            raise
+            # Extract retry_after if available from response headers
+            retry_after = getattr(e, 'retry_after', None)
+            raise ProviderRateLimitError("claude", str(e), retry_after=retry_after)
         except anthropic.APIError as e:
             logger.error(f"Claude API error: {e}")
             raise

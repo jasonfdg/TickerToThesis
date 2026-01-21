@@ -11,7 +11,7 @@ from typing import Optional
 
 from google import genai
 
-from .base import BaseProvider, ProviderConfig, ProviderResponse
+from .base import BaseProvider, ProviderConfig, ProviderResponse, ProviderRateLimitError
 
 try:
     from ..models import TokenUsage
@@ -112,6 +112,11 @@ class GeminiProvider(BaseProvider):
             )
 
         except Exception as e:
+            error_str = str(e).lower()
+            # Detect rate limit errors from various error messages
+            if "429" in str(e) or "quota" in error_str or "rate" in error_str:
+                logger.warning(f"Gemini rate limit: {e}")
+                raise ProviderRateLimitError("gemini", str(e))
             logger.error(f"Gemini API error: {e}")
             raise
 

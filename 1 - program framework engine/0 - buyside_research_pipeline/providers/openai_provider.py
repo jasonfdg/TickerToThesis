@@ -11,7 +11,7 @@ from typing import Optional
 
 import openai
 
-from .base import BaseProvider, ProviderConfig, ProviderResponse
+from .base import BaseProvider, ProviderConfig, ProviderResponse, ProviderRateLimitError
 
 try:
     from ..models import TokenUsage
@@ -92,7 +92,9 @@ class OpenAIProvider(BaseProvider):
 
         except openai.RateLimitError as e:
             logger.warning(f"OpenAI rate limit: {e}")
-            raise
+            # Extract retry_after if available from response headers
+            retry_after = getattr(e, 'retry_after', None)
+            raise ProviderRateLimitError("openai", str(e), retry_after=retry_after)
         except openai.APIError as e:
             logger.error(f"OpenAI API error: {e}")
             raise

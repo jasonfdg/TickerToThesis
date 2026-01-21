@@ -14,6 +14,30 @@ except ImportError:
     from models import TokenUsage
 
 
+class ProviderRateLimitError(Exception):
+    """Unified rate limit exception across all providers.
+
+    Raised when any provider hits a rate limit, allowing the caller
+    to implement consistent fallback behavior.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        message: str,
+        retry_after: Optional[float] = None
+    ):
+        """
+        Args:
+            provider: Name of the provider that hit the rate limit
+            message: Error message from the provider
+            retry_after: Seconds until retry (if known from response headers)
+        """
+        self.provider = provider
+        self.retry_after = retry_after
+        super().__init__(f"{provider} rate limit: {message}")
+
+
 @dataclass
 class ProviderConfig:
     """Configuration for a provider."""

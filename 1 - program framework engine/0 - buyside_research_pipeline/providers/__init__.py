@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
-from .base import BaseProvider, ProviderConfig, ProviderResponse
+from .base import BaseProvider, ProviderConfig, ProviderResponse, ProviderRateLimitError
 from .claude import ClaudeProvider
 from .claude_cli import ClaudeCliProvider
 from .openai_provider import OpenAIProvider
@@ -38,6 +38,7 @@ __all__ = [
     "ProviderFactory",
     "ProviderConfig",
     "ProviderResponse",
+    "ProviderRateLimitError",
     "BaseProvider",
     "ClaudeProvider",
     "ClaudeCliProvider",

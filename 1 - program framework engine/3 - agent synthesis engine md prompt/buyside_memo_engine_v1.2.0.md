@@ -833,6 +833,40 @@ Apply rubric (D3):
 - What evidence would falsify thesis?
 - Who's on the other side and why?
 
+**Phase 4.5: Response to Research Director Critique (Iterations 2-5 ONLY) (NEW v1.2.0)**
+
+For iterations 2-5, you MUST begin your memo with an explicit response section addressing each point from the Research Director's feedback. This creates an audit trail of your analytical evolution.
+
+**Required Format:**
+
+```markdown
+## Response to Research Director Critique
+
+### Critique: "[Quote the exact RD critique]"
+**Verdict:** Accept / Reject / Partially Accept
+**Response:** [1-2 sentences explaining how this changes or doesn't change your analysis]
+**Evidence:** [Cite new sources or reasoning that supports your response]
+
+[Repeat for each RD critique]
+
+### What I Got Wrong in v[N-1] (if applicable)
+1. [Specific error or blind spot]
+2. [Another error]
+
+---
+```
+
+**Verdict Guidelines:**
+- **Accept**: RD was right, your analysis changes materially
+- **Reject**: RD's point doesn't hold after investigation, explain why with evidence
+- **Partially Accept**: Valid concern but limited impact, specify what changes
+
+**Why This Matters:**
+- Forces explicit engagement with critique (no silent updates)
+- Creates visibility for human reviewers into analytical rigor
+- Thesis reversals with error acknowledgment demonstrate strength, not weakness
+- RD will score your engagement quality—shallow responses lower your credibility
+
 **Phase 5: Pre-Submission Checklist (NEW v1.1.0)**
 
 Before finalizing, answer these questions honestly:

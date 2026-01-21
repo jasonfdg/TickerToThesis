@@ -38,15 +38,17 @@ for _env_path in _env_locations:
 
 # Support both module and direct script execution
 try:
-    from .agent_runner import AgentCall, AgentRunner
-    from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path
+    from .agent_runner import AgentCall, AgentRunner, MultiProviderRunner
+    from .citation_extractor import CitationExtractor, extract_citations_from_reports
+    from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, clear_output_dir_cache
     from .models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from .prompt_loader import PromptLoader
     from .report_saver import ReportSaver
     from .source_manager import SourceManager
 except ImportError:
-    from agent_runner import AgentCall, AgentRunner
-    from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path
+    from agent_runner import AgentCall, AgentRunner, MultiProviderRunner
+    from citation_extractor import CitationExtractor, extract_citations_from_reports
+    from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, clear_output_dir_cache
     from models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from prompt_loader import PromptLoader
     from report_saver import ReportSaver
@@ -83,7 +85,15 @@ class TickerToThesisPipeline:
 
         # Initialize components
         self.prompt_loader = PromptLoader()
-        self.agent_runner = AgentRunner(self.config)
+
+        # Use MultiProviderRunner for parallel multi-provider execution
+        if self.config.multi_provider:
+            self.agent_runner = MultiProviderRunner(self.config)
+            logger.info("Using MultiProviderRunner (Claude/GPT-4o/Gemini/Perplexity)")
+        else:
+            self.agent_runner = AgentRunner(self.config)
+            logger.info("Using AgentRunner (Claude only)")
+
         self.source_manager = SourceManager(self.ticker, self.prompt_loader)
         self.report_saver = ReportSaver(self.ticker)
 
@@ -110,9 +120,13 @@ class TickerToThesisPipeline:
 {self.prompt_loader.memo_engine}
 """
 
-    def _build_analyst_user_prompt_v1(self, type_id: int) -> str:
+    def _build_analyst_user_prompt_v1(self, type_id: int, use_filtered_sources: bool = True) -> str:
         """Build the user prompt for analyst iteration 1 (genesis)."""
-        source_content = self.source_manager.get_source_content()
+        # Use filtered sources to reduce token count (~30-50% reduction)
+        if use_filtered_sources:
+            source_content = self.source_manager.get_filtered_sources_for_analyst(type_id)
+        else:
+            source_content = self.source_manager.get_source_content()
 
         return f"""## Task: Initial Analysis of {self.ticker}
 
@@ -140,9 +154,14 @@ This is iteration 1. Be bold. Form your initial view.
         iteration: int,
         previous_report: str,
         rd_feedback: str,
+        use_filtered_sources: bool = True,
     ) -> str:
         """Build the user prompt for analyst iterations 2-5."""
-        source_content = self.source_manager.get_source_content()
+        # Use filtered sources to reduce token count (~30-50% reduction)
+        if use_filtered_sources:
+            source_content = self.source_manager.get_filtered_sources_for_analyst(type_id)
+        else:
+            source_content = self.source_manager.get_source_content()
 
         return f"""## Task: Refine Your Analysis of {self.ticker} (Iteration {iteration})
 
@@ -158,11 +177,39 @@ This is iteration 1. Be bold. Form your initial view.
 ```
 
 ### Instructions
-1. Engage with the Research Director's critique
-2. If their points land, update your analysis with evidence
-3. If you disagree, defend your position with stronger evidence
-4. Sharpen your thesis - more conviction, not less
-5. Update the Sources Used table
+
+**STEP 1: Respond to Research Director Critique (REQUIRED)**
+
+Before writing your updated report, you MUST explicitly address each point from the Research Director's feedback. This creates accountability and visibility into your analytical evolution.
+
+Begin your response with:
+
+---
+## Response to Research Director Critique
+
+For EACH specific critique or question from the Research Director:
+
+### Critique: "[Quote the exact critique or question]"
+**Verdict:** Accept / Reject / Partially Accept
+**Response:** [1-2 sentences explaining how this changes or doesn't change your analysis]
+**Evidence:** [Cite new sources or reasoning that supports your response]
+
+[Repeat for each RD point]
+
+### What I Got Wrong in v{iteration - 1} (if applicable)
+[List specific errors or blind spots you're correcting]
+
+---
+
+**STEP 2: Write Updated Report**
+
+After completing your Response section, write your complete updated report following the memo engine structure. Your updated analysis should reflect the conclusions from Step 1.
+
+**Key principles:**
+- If RD critique lands, update your analysis with evidence
+- If you disagree, defend your position with stronger evidence
+- Sharpen your thesis - more conviction, not less
+- Update the Sources Used table
 
 Remember: A memo without a position is noise. Refine, don't retreat.
 """
@@ -183,15 +230,55 @@ Remember: A memo without a position is noise. Refine, don't retreat.
         type_id: int,
         iteration: int,
         analyst_report: str,
+        previous_rd_feedback: Optional[str] = None,
     ) -> str:
         """Build the user prompt for RD review."""
         type_name = self.prompt_loader.investing_type_name(type_id)
 
-        return f"""## Task: Review {type_name} Analysis of {self.ticker} (Iteration {iteration})
+        # Build engagement assessment section for iterations 2+
+        engagement_section = ""
+        if iteration > 1 and previous_rd_feedback:
+            engagement_section = f"""
+### Your Previous Feedback (v{iteration - 1})
+{previous_rd_feedback}
+
+### STEP 1: Engagement Assessment (REQUIRED for Iterations 2+)
+
+Before reviewing the current report, assess how well the analyst engaged with your previous feedback.
+
+Complete this assessment:
+
+---
+## Engagement Assessment
+
+| RD Critique (v{iteration - 1}) | Addressed? | Quality |
+|--------------------------------|------------|---------|
+| [Quote your specific critique] | ✅ / ⚠️ / ❌ | [Brief quality assessment] |
+| [Next critique] | ✅ / ⚠️ / ❌ | [Brief quality assessment] |
+
+**Legend:** ✅ = Addressed substantively, ⚠️ = Partial/superficial, ❌ = Ignored
+
+| Engagement Metric | Score (1-10) |
+|-------------------|--------------|
+| Response Completeness | Did they address each point? |
+| Response Depth | Substantive or superficial? |
+| Evidence Support | Did they add new evidence? |
+| Intellectual Honesty | Did they acknowledge valid critiques? |
+
+**Overall Engagement Score:** X/10
+**Quality:** Thorough / Adequate / Superficial / Dismissive
+
+---
+
+### STEP 2: Current Report Review
+
+"""
+
+        base_instructions = f"""## Task: Review {type_name} Analysis of {self.ticker} (Iteration {iteration})
 
 ### Analyst Report
 {analyst_report}
-
+{engagement_section}
 ### Instructions
 1. Hunt for weaknesses - what's missing? What's assumed without evidence?
 2. Challenge the thesis - what would make this analyst wrong?
@@ -201,6 +288,7 @@ Remember: A memo without a position is noise. Refine, don't retreat.
 
 Your job is to sharpen, not to kill. Make this analyst better.
 """
+        return base_instructions
 
     def _build_rd_synthesis_system_prompt(self) -> str:
         """Build the system prompt for RD synthesis."""
@@ -277,6 +365,161 @@ Change: Sentences, paragraphs, words, readability.
 Output the complete polished memo.
 """
 
+    def _build_source_scout_system_prompt(self) -> str:
+        """Build the system prompt for web research agent."""
+        return f"""{self.prompt_loader.source_scout_agent}
+
+---
+
+## Memo Engine (Evidence Standards)
+
+{self.prompt_loader.memo_engine}
+"""
+
+    def _build_source_scout_user_prompt(
+        self,
+        iteration: int,
+        rd_reviews: Dict[int, AgentReport],
+    ) -> str:
+        """Build the user prompt for web research agent."""
+        source_content = self.source_manager.get_source_content()
+
+        # Extract RD feedback for each analyst type
+        rd_feedback_section = ""
+        for type_id in range(1, 7):
+            if type_id in rd_reviews and rd_reviews[type_id].is_success:
+                type_name = self.prompt_loader.investing_type_name(type_id)
+                rd_feedback_section += f"""
+### Research Director Feedback for {type_name} Analyst
+{rd_reviews[type_id].content}
+
+---
+"""
+
+        return f"""## Task: Web Research for {self.ticker} — Iteration {iteration}
+
+### Company
+- **Ticker**: {self.ticker}
+- **Iteration**: {iteration} of {self.config.num_iterations}
+
+### Research Director Feedback (All Analyst Types)
+The Research Director has reviewed each analyst's report. Extract research questions from their feedback and find evidence.
+
+{rd_feedback_section}
+
+### Current Source File
+```json
+{source_content}
+```
+
+### Instructions
+1. **Extract Research Questions**: Identify specific questions, gaps, or verification requests from RD feedback
+2. **Prioritize Primary Sources**: Hunt for Glassdoor, customer reviews, GitHub activity, Reddit threads, insider transactions
+3. **Verify Claims**: When RD questions a claim, search for evidence that supports OR refutes it
+4. **Document Gaps**: If you can't find evidence for something, note it explicitly
+5. **Output Format**: Follow the web research report template with JSON source additions
+
+Focus on finding evidence that will sharpen the next iteration of analyst work.
+"""
+
+    async def _run_source_scout(self, iteration: int, rd_reviews: Dict[int, AgentReport]) -> None:
+        """Run web research agent with fallback chain for robustness.
+
+        Fallback order: Perplexity → Gemini → Claude
+        Each provider has different web search capabilities.
+        """
+        logger.info(f"Phase 4: Running web research agent...")
+
+        # Fallback chain: try each provider in order until one succeeds
+        fallback_providers = [
+            ("perplexity", "sonar"),   # Primary: Best web search
+            ("gemini", "gemini-2.0-flash"),  # Secondary: Good web capabilities
+            ("claude", "sonnet"),       # Tertiary: Fallback using knowledge
+        ]
+
+        source_scout_report = None
+        system_prompt = self._build_source_scout_system_prompt()
+        user_prompt = self._build_source_scout_user_prompt(iteration, rd_reviews)
+
+        for provider, model in fallback_providers:
+            try:
+                call = AgentCall(
+                    role=AgentRole.SOURCE_SCOUT,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    iteration=iteration,
+                    identifier=f"source_scout_iter{iteration}_{provider}",
+                    provider=provider,
+                    model=model,
+                )
+
+                source_scout_report = await self.agent_runner.run_single(call)
+
+                if source_scout_report.is_success:
+                    logger.info(f"  Web Research ({provider}): {source_scout_report.token_usage.total_tokens:,} tokens")
+                    break
+                else:
+                    logger.warning(f"  Web Research failed with {provider}: {source_scout_report.error}")
+
+            except Exception as e:
+                logger.warning(f"  Web Research exception with {provider}: {e}")
+                continue
+
+        # Store in iteration state
+        if source_scout_report:
+            self.state.iterations[iteration].source_scout_report = source_scout_report
+
+            if source_scout_report.is_success:
+                self.report_saver.save_source_scout(source_scout_report, iteration)
+                # Update source file with web research findings
+                await self._update_sources_from_source_scout(source_scout_report, iteration)
+            else:
+                logger.error("  Web Research failed with all providers")
+        else:
+            logger.error("  Web Research: No report generated (all providers failed)")
+
+    async def _update_sources_from_source_scout(
+        self,
+        source_scout_report: AgentReport,
+        iteration: int,
+    ) -> bool:
+        """Update source file with findings from web research agent."""
+        if not source_scout_report.is_success:
+            return False
+
+        # Build source update prompt from web research findings
+        update_prompt = self.source_manager.build_source_update_prompt(
+            source_scout_report.content,
+            report_type="source_scout",
+        )
+
+        # Run source summary agent to merge findings
+        call = AgentCall(
+            role=AgentRole.SOURCE_SUMMARY,
+            system_prompt=self.prompt_loader.source_summary_agent,
+            user_prompt=update_prompt,
+            iteration=iteration,
+            identifier=f"source_update_source_scout_iter{iteration}",
+        )
+
+        source_response = await self.agent_runner.run_single(call)
+
+        if not source_response.is_success:
+            logger.warning(f"Source summary agent failed for web research: {source_response.error}")
+            return False
+
+        update_success = self.source_manager.update_from_report(
+            source_scout_report.content,
+            source_response.content
+        )
+
+        if update_success:
+            logger.info(f"  Source file updated from web research (iteration {iteration})")
+            return True
+
+        logger.warning(f"  Source file update from web research failed (iteration {iteration})")
+        return False
+
     async def _run_iteration_1(self) -> None:
         """Run iteration 1 (genesis): Initial analyst reports and RD reviews."""
         logger.info(f"{'='*60}")
@@ -311,13 +554,11 @@ Output the complete polished memo.
                     f"{report.token_usage.total_tokens:,} tokens"
                 )
 
-        # Phase 2: Update source file (sequential, uses all reports)
-        logger.info("Phase 2: Updating source file...")
-        await self._update_sources_from_reports(analyst_reports, 1)
-        iteration_state.source_updated = True
+        # Phase 2 & 3: Run source update AND RD reviews in parallel
+        # Source update doesn't affect RD reviews (they review analyst reports, not sources)
+        logger.info("Phase 2+3: Updating sources AND running RD reviews in parallel...")
 
-        # Phase 3: Run 6 parallel RD review calls
-        logger.info("Phase 3: Running 6 parallel RD review calls...")
+        # Build RD review calls
         rd_calls = []
         for type_id in range(1, 7):
             if type_id in analyst_reports and analyst_reports[type_id].is_success:
@@ -332,7 +573,17 @@ Output the complete polished memo.
                 )
                 rd_calls.append(call)
 
-        rd_reviews = await self.agent_runner.run_rd_review_batch(rd_calls)
+        # Run both in parallel - source update doesn't block RD reviews
+        source_task = asyncio.create_task(
+            self._update_sources_from_reports(analyst_reports, 1)
+        )
+        rd_task = asyncio.create_task(
+            self.agent_runner.run_rd_review_batch(rd_calls)
+        )
+
+        # Wait for both to complete
+        source_updated, rd_reviews = await asyncio.gather(source_task, rd_task)
+        iteration_state.source_updated = source_updated
         iteration_state.rd_reviews = rd_reviews
 
         # Save RD reviews
@@ -342,6 +593,9 @@ Output the complete polished memo.
                 logger.info(
                     f"  RD Review {type_id}: {review.token_usage.total_tokens:,} tokens"
                 )
+
+        # Phase 4: Run web research to gather evidence for next iteration
+        await self._run_source_scout(1, rd_reviews)
 
         iteration_state.mark_completed()
         logger.info(
@@ -382,6 +636,15 @@ Output the complete polished memo.
                     f"report={bool(previous_report)}, feedback={bool(rd_feedback)}"
                 )
 
+        # Validate all 6 analysts have data before proceeding
+        if len(analyst_calls) < 6:
+            missing_types = [t for t in range(1, 7) if not any(c.investing_type_id == t for c in analyst_calls)]
+            raise RuntimeError(
+                f"Cannot proceed with iteration {iteration}: missing reports for analyst types {missing_types}. "
+                f"Expected 6 analysts, got {len(analyst_calls)}. "
+                f"Check interim/ directory for missing analyst_*_v{iteration-1}.md or rd_review_*_v{iteration-1}.md files."
+            )
+
         analyst_reports = await self.agent_runner.run_analyst_batch(analyst_calls)
         iteration_state.analyst_reports = analyst_reports
 
@@ -393,28 +656,39 @@ Output the complete polished memo.
                     f"  Analyst {type_id}: {report.token_usage.total_tokens:,} tokens"
                 )
 
-        # Phase 2: Update source file
-        logger.info("Phase 2: Updating source file...")
-        await self._update_sources_from_reports(analyst_reports, iteration)
-        iteration_state.source_updated = True
+        # Phase 2 & 3: Run source update AND RD reviews in parallel
+        # Source update doesn't affect RD reviews (they review analyst reports, not sources)
+        logger.info("Phase 2+3: Updating sources AND running RD reviews in parallel...")
 
-        # Phase 3: Run 6 parallel RD review calls
-        logger.info("Phase 3: Running 6 parallel RD review calls...")
+        # Build RD review calls
         rd_calls = []
         for type_id in range(1, 7):
             if type_id in analyst_reports and analyst_reports[type_id].is_success:
+                # Load previous RD feedback for engagement assessment
+                previous_rd_feedback = self.report_saver.load_rd_review(type_id, iteration - 1)
                 call = AgentCall(
                     role=AgentRole.RD_REVIEW,
                     system_prompt=self._build_rd_review_system_prompt(),
                     user_prompt=self._build_rd_review_user_prompt(
-                        type_id, iteration, analyst_reports[type_id].content
+                        type_id, iteration, analyst_reports[type_id].content,
+                        previous_rd_feedback=previous_rd_feedback
                     ),
                     investing_type_id=type_id,
                     iteration=iteration,
                 )
                 rd_calls.append(call)
 
-        rd_reviews = await self.agent_runner.run_rd_review_batch(rd_calls)
+        # Run both in parallel - source update doesn't block RD reviews
+        source_task = asyncio.create_task(
+            self._update_sources_from_reports(analyst_reports, iteration)
+        )
+        rd_task = asyncio.create_task(
+            self.agent_runner.run_rd_review_batch(rd_calls)
+        )
+
+        # Wait for both to complete
+        source_updated, rd_reviews = await asyncio.gather(source_task, rd_task)
+        iteration_state.source_updated = source_updated
         iteration_state.rd_reviews = rd_reviews
 
         # Save RD reviews
@@ -423,6 +697,11 @@ Output the complete polished memo.
                 self.report_saver.save_rd_review(review)
                 logger.info(f"  RD Review {type_id}: {review.token_usage.total_tokens:,} tokens")
 
+        # Phase 4: Run web research to gather evidence for next iteration
+        # Skip on final iteration since there's no next iteration to inform
+        if iteration < self.config.num_iterations:
+            await self._run_source_scout(iteration, rd_reviews)
+
         iteration_state.mark_completed()
         logger.info(
             f"Iteration {iteration} complete: "
@@ -430,9 +709,14 @@ Output the complete polished memo.
         )
 
     async def _run_synthesis(self) -> None:
-        """Run final synthesis: RD synthesizes all v5 reports."""
+        """Run final synthesis: RD synthesizes all v5 reports.
+
+        Uses rd_synthesis_prompt_v2 which combines synthesis + polish in one pass.
+        Gemini is used for this step (configured in ROLE_PROVIDER_CONFIG).
+        The output is saved directly as the final memo - no separate polish step.
+        """
         logger.info(f"{'='*60}")
-        logger.info("SYNTHESIS: Research Director Final View")
+        logger.info("SYNTHESIS: Research Director Final View (1-step with Gemini)")
         logger.info(f"{'='*60}")
 
         # Load all final reports (iteration matches config.num_iterations)
@@ -445,7 +729,7 @@ Output the complete polished memo.
                 f"Need at least 4 final reports for synthesis, got {len(all_final_reports)}"
             )
 
-        # Run synthesis
+        # Run synthesis (uses Gemini via ROLE_PROVIDER_CONFIG)
         call = AgentCall(
             role=AgentRole.RD_SYNTHESIS,
             system_prompt=self._build_rd_synthesis_system_prompt(),
@@ -455,10 +739,15 @@ Output the complete polished memo.
 
         synthesis_report = await self.agent_runner.run_single(call)
         self.state.synthesis_report = synthesis_report
+        # Store as final_report too since synthesis now produces the final output
+        self.state.final_report = synthesis_report
 
         if synthesis_report.is_success:
+            # Save as both synthesis_raw (for reference) and final memo
             self.report_saver.save_synthesis(synthesis_report)
+            filepath = self.report_saver.save_final(synthesis_report)
             logger.info(f"Synthesis complete: {synthesis_report.token_usage.total_tokens:,} tokens")
+            logger.info(f"Final memo saved: {filepath}")
         else:
             raise RuntimeError(f"Synthesis failed: {synthesis_report.error}")
 
@@ -495,17 +784,151 @@ Output the complete polished memo.
         reports: Dict[int, AgentReport],
         iteration: int,
         max_retries: int = 2,
+        use_v2: bool = True,
     ) -> bool:
         """
         Update source file with sources from analyst reports.
+
+        V2 Flow (default):
+        1. Pre-extract citations using CitationExtractor
+        2. Build slim structured prompt
+        3. Try Haiku first (fast, cheap)
+        4. Escalate to Sonnet if thesis extraction fails
 
         Args:
             reports: Dict of analyst reports by type_id
             iteration: Current iteration number
             max_retries: Number of retries if source update fails
+            use_v2: Use v2 flow with pre-extraction (default True)
 
         Returns:
             True if source file was updated successfully
+        """
+        if not use_v2:
+            return await self._update_sources_from_reports_v1(reports, iteration, max_retries)
+
+        # V2 Flow: Pre-extract citations
+        report_contents = {
+            type_id: report.content
+            for type_id, report in reports.items()
+            if report.is_success
+        }
+
+        if not report_contents:
+            logger.warning("No successful reports to update sources from")
+            return False
+
+        # Pre-extract citations and thesis claims
+        extractor = CitationExtractor()
+        extractions = []
+        for type_id, content in report_contents.items():
+            extraction = extractor.extract_from_report(content, type_id, iteration)
+            extractions.append(extraction.to_dict())
+
+        total_sources = sum(len(e["sources"]) for e in extractions)
+        total_claims = sum(len(e["thesis_claims"]) for e in extractions)
+        logger.info(
+            f"Pre-extracted: {total_sources} sources, {total_claims} thesis claims "
+            f"from {len(report_contents)} reports"
+        )
+
+        # Build slim prompt with extractions
+        update_prompt = self.source_manager.build_slim_source_update_prompt(
+            extractions, iteration
+        )
+
+        # Try with source_summary_agent_v2
+        success = await self._run_source_update_v2(
+            update_prompt, iteration, extractions, max_retries
+        )
+
+        if success:
+            return True
+
+        # Fallback to v1 if v2 fails completely
+        logger.warning("V2 source update failed, falling back to v1...")
+        return await self._update_sources_from_reports_v1(reports, iteration, max_retries)
+
+    async def _run_source_update_v2(
+        self,
+        update_prompt: str,
+        iteration: int,
+        extractions: List[Dict],
+        max_retries: int = 2,
+    ) -> bool:
+        """
+        Run source update with v2 agent and optional model escalation.
+
+        Args:
+            update_prompt: Structured prompt for v2 agent
+            iteration: Current iteration number
+            extractions: Pre-extracted data for validation
+            max_retries: Number of retries
+
+        Returns:
+            True if update succeeded
+        """
+        # Try Haiku first (fast, cheap)
+        models_to_try = [
+            ("claude", "haiku"),
+            ("claude", "sonnet"),  # Escalate if Haiku fails
+        ]
+
+        for provider, model in models_to_try:
+            for attempt in range(max_retries + 1):
+                call = AgentCall(
+                    role=AgentRole.SOURCE_SUMMARY,
+                    system_prompt=self.prompt_loader.source_summary_agent_v2,
+                    user_prompt=update_prompt,
+                    iteration=iteration,
+                    identifier=f"source_update_v2_iter{iteration}_{model}_attempt{attempt}",
+                    provider=provider,
+                    model=model,
+                )
+
+                source_response = await self.agent_runner.run_single(call)
+
+                if not source_response.is_success:
+                    logger.warning(f"Source summary v2 ({model}) failed: {source_response.error}")
+                    continue
+
+                # Try to update from the response
+                update_success = self.source_manager.update_from_report(
+                    "",  # No raw report content needed for v2
+                    source_response.content
+                )
+
+                if not update_success:
+                    logger.warning(f"Source update parsing failed ({model})")
+                    continue
+
+                # Validate thesis extraction quality
+                data = self.source_manager.load_source_file()
+                if self.source_manager.validate_thesis_extraction(data):
+                    logger.info(
+                        f"Source file updated with v2 ({model}), "
+                        f"iteration {iteration}"
+                    )
+                    return True
+                else:
+                    logger.warning(f"Thesis extraction incomplete ({model}), escalating...")
+                    break  # Try next model
+
+            if provider == "claude" and model == "haiku":
+                logger.info("Escalating to Sonnet for better thesis extraction...")
+
+        return False
+
+    async def _update_sources_from_reports_v1(
+        self,
+        reports: Dict[int, AgentReport],
+        iteration: int,
+        max_retries: int = 2,
+    ) -> bool:
+        """
+        Original v1 source update flow (fallback).
+
+        Uses raw markdown reports and v1 source_summary_agent.
         """
         # Combine all successful reports into one update
         combined_content = ""
@@ -532,7 +955,7 @@ Output the complete polished memo.
                 system_prompt=self.prompt_loader.source_summary_agent,
                 user_prompt=update_prompt,
                 iteration=iteration,
-                identifier=f"source_update_iter{iteration}_attempt{attempt}",
+                identifier=f"source_update_v1_iter{iteration}_attempt{attempt}",
             )
 
             source_response = await self.agent_runner.run_single(call)
@@ -551,7 +974,7 @@ Output the complete polished memo.
             )
 
             if update_success:
-                logger.info(f"Source file updated successfully (iteration {iteration})")
+                logger.info(f"Source file updated successfully v1 (iteration {iteration})")
                 return True
 
             if attempt < max_retries:
@@ -568,6 +991,9 @@ Output the complete polished memo.
         Returns:
             Path to the final memo file
         """
+        # Clear output directory cache to ensure fresh versioned directory for this run
+        clear_output_dir_cache()
+
         logger.info(f"{'='*60}")
         logger.info(f"TickerToThesis Pipeline: {self.ticker}")
         logger.info(f"{'='*60}")
@@ -586,11 +1012,8 @@ Output the complete polished memo.
             for iteration in range(2, self.config.num_iterations + 1):
                 await self._run_iteration(iteration)
 
-            # Run synthesis
+            # Run synthesis (1-step: includes polish, uses Gemini)
             await self._run_synthesis()
-
-            # Run human readable polish
-            await self._run_human_readable_polish()
 
             self.state.mark_completed()
 
@@ -604,6 +1027,19 @@ Output the complete polished memo.
             logger.info(f"Total tokens: {self.state.total_token_usage.total_tokens:,}")
             logger.info(f"Duration: {self.state.duration_seconds:.1f}s")
             logger.info(f"Final memo: {get_final_memo_path(self.ticker)}")
+
+            # Log provider stats if using MultiProviderRunner
+            if self.config.multi_provider and hasattr(self.agent_runner, 'get_provider_stats'):
+                logger.info(f"{'='*60}")
+                logger.info("PROVIDER BREAKDOWN")
+                logger.info(f"{'='*60}")
+                for provider, stats in self.agent_runner.get_provider_stats().items():
+                    logger.info(
+                        f"  {provider}: {stats['calls']} calls, "
+                        f"{stats['input_tokens'] + stats['output_tokens']:,} tokens"
+                    )
+                costs = self.agent_runner.get_cost_estimate()
+                logger.info(f"Estimated cost: ${costs.get('total', 0):.2f}")
 
             return str(get_final_memo_path(self.ticker))
 

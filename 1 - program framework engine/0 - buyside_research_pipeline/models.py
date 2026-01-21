@@ -18,6 +18,7 @@ class AgentRole(Enum):
     RD_SYNTHESIS = "rd_synthesis"
     SOURCE_SUMMARY = "source_summary"
     HUMAN_READABLE = "human_readable"
+    SOURCE_SCOUT = "source_scout"
 
 
 @dataclass
@@ -110,6 +111,7 @@ class IterationState:
     iteration: int
     analyst_reports: Dict[int, AgentReport] = field(default_factory=dict)  # type_id -> report
     rd_reviews: Dict[int, AgentReport] = field(default_factory=dict)  # type_id -> review
+    source_scout_report: Optional[AgentReport] = None  # Web research findings for this iteration
     source_updated: bool = False
     completed: bool = False
     started_at: Optional[datetime] = None
@@ -139,6 +141,8 @@ class IterationState:
             total = total + report.token_usage
         for review in self.rd_reviews.values():
             total = total + review.token_usage
+        if self.source_scout_report:
+            total = total + self.source_scout_report.token_usage
         return total
 
     def to_dict(self) -> dict:
@@ -147,6 +151,7 @@ class IterationState:
             "iteration": self.iteration,
             "analyst_reports": {k: v.to_dict() for k, v in self.analyst_reports.items()},
             "rd_reviews": {k: v.to_dict() for k, v in self.rd_reviews.items()},
+            "source_scout_report": self.source_scout_report.to_dict() if self.source_scout_report else None,
             "source_updated": self.source_updated,
             "completed": self.completed,
             "started_at": self.started_at.isoformat() if self.started_at else None,

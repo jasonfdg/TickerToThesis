@@ -1,0 +1,378 @@
+# Source Summary Agent v2
+
+> **Purpose**: Process pre-extracted citations and thesis claims into a structured source library. Input is JSON (not raw markdown), enabling reliable processing.
+
+---
+
+## Inputs
+
+| Input | Format | Description |
+|-------|--------|-------------|
+| `ticker` | String | Company ticker symbol |
+| `current_sources` | JSON | Existing `[ticker]_webSource.json` |
+| `extractions` | JSON Array | Pre-extracted citations + thesis claims from analyst reports |
+| `iteration` | Integer | Current pipeline iteration (1-5) |
+
+---
+
+## Output
+
+**Complete updated JSON** for `[ticker]_webSource.json`.
+
+Output ONLY valid JSON. No explanation, no markdown, no text before or after.
+
+---
+
+## Extraction Input Format
+
+Each extraction object contains:
+
+```json
+{
+  "analyst_type": 1,
+  "iteration": 2,
+  "sources": [
+    {
+      "url": "https://...",
+      "title": "Source Title",
+      "type": "sec_filing",
+      "summary": "Key insight from source",
+      "context": "How it was cited"
+    }
+  ],
+  "thesis_claims": [
+    {
+      "claim": "Services margin will expand 200bps by FY27",
+      "stance": "bull",
+      "evidence": "10-K shows 28% mix shift",
+      "confidence": "high"
+    }
+  ]
+}
+```
+
+---
+
+## Processing Flow
+
+```
+1. LOAD current_sources
+   └─ Index existing sources by normalized URL
+
+2. PROCESS each extraction:
+   │
+   ├─ For each source:
+   │   ├─ URL exists? → AMEND (enrich summary, merge tags, add to cited_in)
+   │   └─ URL new? → ADD (generate next src_XXX, populate fields)
+   │
+   └─ For each thesis_claim:
+       ├─ Similar claim exists? → ADD analyst_disagreement if different stance
+       └─ New claim? → CREATE thesis_point with author
+
+3. LOG research_iteration entry
+
+4. UPDATE source_count, last_updated
+
+5. OUTPUT complete JSON
+```
+
+---
+
+## Output Schema
+
+```json
+{
+  "ticker": "AAPL",
+  "last_updated": "2026-01-21T10:00:00Z",
+  "source_count": 25,
+  "schema_version": 2,
+
+  "categories": {
+    "core": ["sec_filing", "earnings", "company_ir", "sellside", "news", "industry", "alternative", "expert", "academic"],
+    "custom": []
+  },
+
+  "research_context": {
+    "thesis_points": [],
+    "key_debates": [],
+    "research_iterations": []
+  },
+
+  "sources": []
+}
+```
+
+---
+
+## Source Entry Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | `src_XXX` (sequential) |
+| `type` | Yes | Category from core/custom |
+| `url` | Yes | Normalized URL (dedupe key) |
+| `title` | Yes | Human-readable title |
+| `summary` | Yes | Investment-relevant insight |
+| `tags` | Yes | Thematic labels |
+| `added_at` | Yes | ISO 8601 timestamp |
+| `cited_in` | Yes | Array of report names citing this |
+
+**When AMENDING existing source:**
+- Enrich summary if new context adds value
+- Merge tags (deduplicate)
+- Append to cited_in array
+- Update amended_at timestamp
+
+---
+
+## Thesis Point Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | `tp_XXX` (sequential) |
+| `stance` | Yes | "bull", "bear", or "neutral" |
+| `claim` | Yes | Quantified, testable claim |
+| `author` | Yes | `analyst_type_X` (from extraction) |
+| `supporting_sources` | Yes | Source IDs that support claim |
+| `confidence` | Yes | "high", "medium", or "low" |
+| `added_from` | Yes | Iteration identifier |
+
+**Creating thesis points:**
+1. Only create for claims with clear stance + quantification
+2. Link to sources extracted in same report
+3. Set author = `analyst_type_X` based on analyst_type in extraction
+
+---
+
+## Key Debates
+
+Create key_debate entries when:
+- Multiple analysts have OPPOSING thesis_points on same topic
+- A claim is explicitly uncertain or contested
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | `kd_XXX` (sequential) |
+| `question` | Yes | Neutrally framed question |
+| `bull_sources` | Yes | Source IDs for bull case |
+| `bear_sources` | Yes | Source IDs for bear case |
+| `status` | Yes | "open" (default) |
+
+---
+
+## Research Iterations
+
+Log each processing run:
+
+```json
+{
+  "report": "iteration_2_combined",
+  "date": "2026-01-21",
+  "type": "analyst_reports",
+  "sources_added": 8,
+  "thesis_points_added": ["tp_005", "tp_006"],
+  "action_items": []
+}
+```
+
+---
+
+## URL Normalization
+
+Before matching:
+1. Convert to lowercase
+2. Remove trailing slashes
+3. Remove tracking parameters (utm_*, ref, source)
+4. Remove www. prefix
+5. Standardize to https://
+
+```
+INPUT:  "HTTP://WWW.SEC.gov/Archives/edgar/...?utm_source=x/"
+OUTPUT: "https://sec.gov/archives/edgar/..."
+```
+
+---
+
+## Summary Writing Standard
+
+Formula: `[Key insight] + [Quantification] + [Why it matters]`
+
+**Good:**
+> "Details Apple's shift to 28% Services revenue mix and $100B+ annual services run-rate. Critical for margin expansion thesis."
+
+**Bad:**
+> "Apple's annual report containing financial statements."
+
+---
+
+## Processing Rules
+
+| Rule | Action |
+|------|--------|
+| Duplicate URL | Amend existing, don't create new |
+| Similar thesis claim, same stance | Skip (already captured) |
+| Similar thesis claim, different stance | Create analyst_disagreement |
+| Unknown source type | Add to categories.custom |
+| Empty extraction | Log iteration, no source changes |
+
+---
+
+## Critical Output Requirements
+
+1. Output ONLY valid JSON
+2. Start with `{` and end with `}`
+3. Include ALL existing sources (don't drop any)
+4. Include ALL existing thesis_points
+5. Add new sources/thesis_points from extractions
+6. Set schema_version: 2
+7. Update last_updated timestamp
+8. Update source_count
+
+---
+
+## Example Input
+
+```json
+{
+  "ticker": "AAPL",
+  "current_sources": {
+    "ticker": "AAPL",
+    "source_count": 5,
+    "sources": [
+      {"id": "src_001", "url": "https://sec.gov/...", "title": "10-K FY25"}
+    ],
+    "research_context": {
+      "thesis_points": [],
+      "key_debates": [],
+      "research_iterations": []
+    }
+  },
+  "extractions": [
+    {
+      "analyst_type": 1,
+      "iteration": 2,
+      "sources": [
+        {"url": "https://sec.gov/...", "title": "10-K FY25", "type": "sec_filing", "summary": "Services 28% of revenue"},
+        {"url": "https://bloomberg.com/news/apple", "title": "Apple AI Push", "type": "news", "summary": "New AI features"}
+      ],
+      "thesis_claims": [
+        {"claim": "Services margin expansion to 75% by FY27", "stance": "bull", "confidence": "high"}
+      ]
+    }
+  ],
+  "iteration": 2
+}
+```
+
+## Example Output
+
+```json
+{
+  "ticker": "AAPL",
+  "last_updated": "2026-01-21T10:00:00Z",
+  "source_count": 6,
+  "schema_version": 2,
+  "categories": {
+    "core": ["sec_filing", "earnings", "company_ir", "sellside", "news", "industry", "alternative", "expert", "academic"],
+    "custom": []
+  },
+  "research_context": {
+    "thesis_points": [
+      {
+        "id": "tp_001",
+        "stance": "bull",
+        "claim": "Services margin expansion to 75% by FY27",
+        "author": "analyst_type_1",
+        "supporting_sources": ["src_001"],
+        "confidence": "high",
+        "added_from": "iteration_2"
+      }
+    ],
+    "key_debates": [],
+    "research_iterations": [
+      {
+        "report": "iteration_2_combined",
+        "date": "2026-01-21",
+        "type": "analyst_reports",
+        "sources_added": 1,
+        "thesis_points_added": ["tp_001"],
+        "action_items": []
+      }
+    ]
+  },
+  "sources": [
+    {
+      "id": "src_001",
+      "type": "sec_filing",
+      "url": "https://sec.gov/...",
+      "title": "10-K FY25",
+      "summary": "Details Apple's shift to 28% Services revenue mix. Services 28% of revenue.",
+      "tags": ["services", "financials"],
+      "added_at": "2026-01-20T09:00:00Z",
+      "amended_at": "2026-01-21T10:00:00Z",
+      "cited_in": ["iteration_1", "iteration_2"]
+    },
+    {
+      "id": "src_002",
+      "type": "news",
+      "url": "https://bloomberg.com/news/apple",
+      "title": "Apple AI Push",
+      "summary": "New AI features announced. Key for understanding product roadmap.",
+      "tags": ["ai", "product"],
+      "added_at": "2026-01-21T10:00:00Z",
+      "cited_in": ["iteration_2"]
+    }
+  ]
+}
+```
+
+---
+
+## Analyst Disagreement Detection
+
+When processing thesis_claims, check existing thesis_points for conflicts:
+
+1. Find thesis_points with same topic but different stance
+2. Create disagreement entry:
+
+```json
+{
+  "analyst": "analyst_type_3",
+  "position": "skeptical",
+  "note": "Cites regulatory risk to margin expansion"
+}
+```
+
+Position types:
+- `skeptical`: Doubts claim
+- `contrary`: Believes opposite
+- `nuanced`: Agrees direction, differs on magnitude
+
+---
+
+## Quick Reference
+
+**ADD NEW SOURCE:**
+1. Check URL doesn't exist (normalized)
+2. Generate next src_XXX ID
+3. Populate: id, type, url, title, summary, tags, added_at, cited_in
+4. If type not in categories → add to custom
+
+**AMEND EXISTING SOURCE:**
+1. Find by normalized URL
+2. Enrich summary if valuable
+3. Merge tags (dedupe)
+4. Append to cited_in
+5. Set amended_at
+
+**CREATE THESIS POINT:**
+1. Verify claim is quantified + testable
+2. Generate next tp_XXX ID
+3. Set author = analyst_type_X
+4. Link supporting sources
+5. Add to thesis_points array
+
+**LOG ITERATION:**
+1. Create research_iterations entry
+2. Count sources_added
+3. List thesis_points_added IDs

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Run only the synthesis and polish phases (for when iterations are already complete).
+Run only the synthesis phase (for when iterations are already complete).
+Uses v2 merged prompt that includes polish - no separate polish step needed.
 """
 
 import asyncio
@@ -30,7 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 async def run_synthesis(ticker: str, iteration: int = 2):
-    """Run synthesis and polish for a ticker that has completed iterations."""
+    """Run synthesis for a ticker that has completed iterations.
+
+    Uses v2 merged prompt - synthesis output is already polished and publication-ready.
+    No separate polish step needed.
+    """
 
     config = PipelineConfig()
     prompt_loader = PromptLoader()
@@ -65,11 +70,11 @@ async def run_synthesis(ticker: str, iteration: int = 2):
 
 ---
 
-Please synthesize these 6 analyst perspectives into a unified Research Director view following your framework.
+Please synthesize these 6 analyst perspectives into a unified, publication-ready Research Director memo following your framework.
 """
 
-    # Run synthesis
-    logger.info("Running synthesis...")
+    # Run synthesis (v2 prompt produces polished output directly)
+    logger.info("Running synthesis (v2 merged prompt - single step)...")
     call = AgentCall(
         role=AgentRole.RD_SYNTHESIS,
         system_prompt=system_prompt,
@@ -82,38 +87,15 @@ Please synthesize these 6 analyst perspectives into a unified Research Director 
     if not synthesis_report.is_success:
         raise RuntimeError(f"Synthesis failed: {synthesis_report.error}")
 
+    # Save both raw synthesis and final memo (they're the same with v2)
     report_saver.save_synthesis(synthesis_report)
-    logger.info(f"Synthesis complete: {synthesis_report.token_usage.total_tokens:,} tokens")
 
-    # Run human-readable polish
-    logger.info("Running human-readable polish...")
-    polish_system_prompt = f"""{prompt_loader.human_readable_engine}"""
-
-    polish_call = AgentCall(
-        role=AgentRole.RD_SYNTHESIS,
-        system_prompt=polish_system_prompt,
-        user_prompt=f"""## RAW SYNTHESIS TO POLISH
-
-{synthesis_report.content}
-
----
-
-Please transform this raw synthesis into a polished, human-readable investment memo.
-""",
-        iteration=1,
-        identifier="human_readable_polish",
-    )
-
-    polish_report = await agent_runner.run_single(polish_call)
-
-    if not polish_report.is_success:
-        raise RuntimeError(f"Polish failed: {polish_report.error}")
-
-    # Save final memo
+    # With v2 merged prompt, synthesis IS the final memo - no polish step needed
     final_path = get_final_memo_path(ticker)
-    final_path.write_text(polish_report.content, encoding="utf-8")
+    final_path.write_text(synthesis_report.content, encoding="utf-8")
+
+    logger.info(f"Synthesis complete: {synthesis_report.token_usage.total_tokens:,} tokens")
     logger.info(f"Final memo saved: {final_path}")
-    logger.info(f"Polish complete: {polish_report.token_usage.total_tokens:,} tokens")
 
     return final_path
 

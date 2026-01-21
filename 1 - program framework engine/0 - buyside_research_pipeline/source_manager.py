@@ -19,6 +19,17 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Source type filters by analyst investing philosophy
+# Each analyst type prioritizes different source categories
+ANALYST_SOURCE_FILTERS = {
+    1: ["sec_filing", "earnings", "company_ir", "sellside"],  # Quality Compounders
+    2: ["industry", "alternative", "news", "expert"],  # Imaginative Growth
+    3: ["sec_filing", "sellside", "alternative"],  # Fundamental L/S
+    4: ["sec_filing", "earnings", "academic"],  # Deep Value
+    5: ["news", "sec_filing", "litigation"],  # Event-Driven (8-K focus)
+    6: ["industry", "macro", "news"],  # Macro-Tactical
+}
+
 
 class SourceManager:
     """
@@ -120,7 +131,8 @@ class SourceManager:
         - Pure JSON
         - Markdown-wrapped JSON (```json ... ```)
         - JSON with text before/after
-        - Multiple JSON blocks (takes the largest/most complete)
+        - BOM and whitespace issues
+        - Truncated JSON (attempts repair)
 
         Returns:
             Parsed JSON dict or None if extraction fails
@@ -131,43 +143,105 @@ class SourceManager:
             logger.warning("Empty response from source_summary_agent")
             return None
 
+        # Clean up common issues
+        cleaned = response.strip()
+        cleaned = cleaned.lstrip('\ufeff')  # Remove BOM if present
+
         # Strategy 1: Try direct JSON parse
         try:
-            return json.loads(response)
+            return json.loads(cleaned)
         except json.JSONDecodeError:
             pass
 
         # Strategy 2: Extract from markdown code blocks
-        json_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", response)
+        json_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
         for block in json_blocks:
             try:
-                parsed = json.loads(block)
+                parsed = json.loads(block.strip())
                 if isinstance(parsed, dict) and "ticker" in parsed:
                     return parsed
             except json.JSONDecodeError:
                 continue
 
-        # Strategy 3: Find JSON object by matching braces
-        # Look for outermost { ... } that contains "ticker"
-        brace_depth = 0
-        json_start = None
-        for i, char in enumerate(response):
-            if char == '{':
-                if brace_depth == 0:
-                    json_start = i
-                brace_depth += 1
-            elif char == '}':
-                brace_depth -= 1
-                if brace_depth == 0 and json_start is not None:
-                    potential_json = response[json_start:i+1]
-                    try:
-                        parsed = json.loads(potential_json)
-                        if isinstance(parsed, dict) and "ticker" in parsed:
-                            return parsed
-                    except json.JSONDecodeError:
-                        pass
-                    json_start = None
+        # Strategy 3: Find JSON by locating first { and trying progressively shorter substrings
+        # This handles cases where there's extra text after the JSON
+        first_brace = cleaned.find('{')
+        if first_brace == -1:
+            return None
 
+        # Try parsing from first { to progressively earlier } positions
+        last_brace = cleaned.rfind('}')
+        while last_brace > first_brace:
+            potential_json = cleaned[first_brace:last_brace + 1]
+            try:
+                parsed = json.loads(potential_json)
+                if isinstance(parsed, dict) and "ticker" in parsed:
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+            # Try finding the previous }
+            last_brace = cleaned.rfind('}', first_brace, last_brace)
+
+        # Strategy 4: Attempt to repair truncated JSON
+        # If response starts with { and contains "ticker", try to close unclosed braces/brackets
+        if cleaned.startswith('{') and '"ticker"' in cleaned:
+            repaired = self._attempt_json_repair(cleaned[first_brace:])
+            if repaired:
+                try:
+                    parsed = json.loads(repaired)
+                    if isinstance(parsed, dict) and "ticker" in parsed:
+                        logger.info("Successfully repaired truncated JSON")
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+
+        return None
+
+    def _attempt_json_repair(self, json_str: str) -> Optional[str]:
+        """
+        Attempt to repair truncated or malformed JSON by closing unclosed brackets.
+
+        This is a best-effort repair for common truncation issues.
+        """
+        # Count unclosed brackets
+        open_braces = 0
+        open_brackets = 0
+        in_string = False
+        escape_next = False
+
+        for char in json_str:
+            if escape_next:
+                escape_next = False
+                continue
+            if char == '\\' and in_string:
+                escape_next = True
+                continue
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+
+            if char == '{':
+                open_braces += 1
+            elif char == '}':
+                open_braces -= 1
+            elif char == '[':
+                open_brackets += 1
+            elif char == ']':
+                open_brackets -= 1
+
+        # If we're still in a string, close it
+        if in_string:
+            json_str += '"'
+
+        # Close unclosed brackets and braces
+        json_str += ']' * max(0, open_brackets)
+        json_str += '}' * max(0, open_braces)
+
+        # Only return if we made meaningful repairs
+        if open_braces > 0 or open_brackets > 0 or in_string:
+            return json_str
         return None
 
     def _validate_source_data(self, data: Dict[str, Any]) -> bool:
@@ -287,6 +361,83 @@ class SourceManager:
         data = self.load_source_file()
         return json.dumps(data, indent=2, ensure_ascii=False)
 
+    def get_slim_source_content(self) -> str:
+        """
+        Get minimal source content for prompts (~40-50% smaller).
+
+        Returns only essential fields: id, type, url, title, summary, tags.
+        Excludes: thesis_relevance, interpretations, reason, cited_in, amended_at.
+
+        Returns:
+            Compact JSON string for analyst prompts
+        """
+        data = self.load_source_file()
+        slim = {
+            "ticker": data["ticker"],
+            "source_count": data.get("source_count", 0),
+            "sources": [
+                {
+                    "id": s["id"],
+                    "type": s.get("type", "unknown"),
+                    "url": s.get("url", ""),
+                    "title": s.get("title", ""),
+                    "summary": s.get("summary", ""),
+                    "tags": s.get("tags", []),
+                }
+                for s in data.get("sources", [])
+            ],
+        }
+        return json.dumps(slim, indent=2, ensure_ascii=False)
+
+    def get_filtered_sources_for_analyst(
+        self,
+        analyst_type_id: int,
+        previously_cited_urls: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Get sources filtered for a specific analyst investing philosophy.
+
+        Args:
+            analyst_type_id: Analyst type (1-6)
+            previously_cited_urls: URLs analyst has cited before (always include)
+
+        Returns:
+            Compact JSON string with relevant sources for this analyst type
+        """
+        data = self.load_source_file()
+        source_types = ANALYST_SOURCE_FILTERS.get(analyst_type_id, [])
+        previously_cited = set(previously_cited_urls or [])
+
+        filtered_sources = []
+        for s in data.get("sources", []):
+            src_type = s.get("type", "unknown")
+            src_url = s.get("url", "")
+
+            # Include if type matches OR previously cited by this analyst
+            if src_type in source_types or src_url in previously_cited:
+                filtered_sources.append({
+                    "id": s["id"],
+                    "type": src_type,
+                    "url": src_url,
+                    "title": s.get("title", ""),
+                    "summary": s.get("summary", ""),
+                    "tags": s.get("tags", []),
+                })
+
+        result = {
+            "ticker": data["ticker"],
+            "source_count": len(filtered_sources),
+            "total_available": data.get("source_count", 0),
+            "filter": f"analyst_type_{analyst_type_id}",
+            "sources": filtered_sources,
+        }
+
+        logger.debug(
+            f"Filtered sources for analyst {analyst_type_id}: "
+            f"{len(filtered_sources)}/{data.get('source_count', 0)}"
+        )
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
     def get_source_summary(self) -> str:
         """
         Get a brief summary of the source file for inclusion in prompts.
@@ -375,6 +526,90 @@ Example of correct output format:
 
         return prompt
 
+    def build_slim_source_update_prompt(
+        self,
+        extractions: List[Dict[str, Any]],
+        iteration: int,
+    ) -> str:
+        """
+        Build a structured prompt for source_summary_agent_v2 using pre-extracted data.
+
+        This version uses pre-extracted citations and thesis claims (JSON),
+        making the task tractable for Haiku.
+
+        Args:
+            extractions: List of extraction results from CitationExtractor
+            iteration: Current pipeline iteration (1-5)
+
+        Returns:
+            Structured JSON prompt for source_summary_agent_v2
+        """
+        current_source = self.load_source_file()
+
+        # Build the structured input for v2 agent
+        prompt_data = {
+            "ticker": self.ticker,
+            "current_sources": current_source,
+            "extractions": extractions,
+            "iteration": iteration,
+        }
+
+        prompt = f"""Process the pre-extracted citations and thesis claims for {self.ticker}.
+
+## Structured Input
+```json
+{json.dumps(prompt_data, indent=2, ensure_ascii=False)}
+```
+
+## Instructions
+1. For each source in extractions:
+   - If URL exists in current_sources: AMEND (enrich summary, merge tags)
+   - If URL is new: ADD with complete metadata (generate next src_XXX)
+2. For each thesis_claim in extractions:
+   - If similar claim exists with different stance: add to analyst_disagreements
+   - If new claim: CREATE thesis_point with author = analyst_type_X
+3. Log this iteration in research_iterations
+4. Set schema_version: 2
+
+## CRITICAL OUTPUT REQUIREMENTS
+- Output ONLY valid JSON
+- Start with {{ and end with }}
+- Include ALL existing sources + new sources
+- Include ALL existing thesis_points + new thesis_points
+- Update source_count and last_updated
+
+{{"ticker": "{self.ticker}", "schema_version": 2, "sources": [...], "research_context": {{...}}, ...}}
+"""
+
+        return prompt
+
+    def validate_thesis_extraction(self, response_data: Dict[str, Any]) -> bool:
+        """
+        Validate that thesis extraction was successful.
+
+        Returns True if thesis_points and research_iterations are properly populated.
+        Used to determine if Haiku->Sonnet escalation is needed.
+        """
+        if not response_data:
+            return False
+
+        research_context = response_data.get("research_context", {})
+
+        # Check thesis_points exist and have required fields
+        thesis_points = research_context.get("thesis_points", [])
+        if thesis_points:
+            for tp in thesis_points:
+                if not all(k in tp for k in ["id", "stance", "claim", "author"]):
+                    return False
+
+        # Check research_iterations are logged
+        iterations = research_context.get("research_iterations", [])
+        if not iterations:
+            logger.warning("No research_iterations logged - thesis extraction may have failed")
+            return False
+
+        return True
+
     def clear_cache(self) -> None:
         """Clear the cached source file content."""
         self._cache = None
@@ -383,6 +618,60 @@ Example of correct output format:
         """Check if the source file has any sources."""
         data = self.load_source_file()
         return len(data.get("sources", [])) > 0
+
+    def log_research_iteration(
+        self,
+        report_name: str,
+        iteration_type: str,
+        focus: str,
+        sources_added: int = 0,
+        thesis_points_added: Optional[List[str]] = None,
+        action_items: Optional[List[str]] = None,
+        analyst_id: Optional[str] = None,
+    ) -> None:
+        """
+        Log a research iteration to track pipeline progress.
+
+        Args:
+            report_name: Filename of the report (e.g., "analyst_1_v2.md")
+            iteration_type: "analyst_report" or "director_feedback" or "source_scout"
+            focus: Brief description of iteration focus
+            sources_added: Number of sources added this iteration
+            thesis_points_added: List of thesis point IDs added
+            action_items: List of outstanding action items
+            analyst_id: Analyst ID (required for analyst_report type)
+        """
+        data = self.load_source_file()
+
+        # Ensure research_context exists
+        if "research_context" not in data:
+            data["research_context"] = {
+                "thesis_points": [],
+                "key_debates": [],
+                "research_iterations": [],
+            }
+
+        iteration_entry = {
+            "report": report_name,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "type": iteration_type,
+            "focus": focus,
+            "sources_added": sources_added,
+            "thesis_points_added": thesis_points_added or [],
+            "action_items": action_items or [],
+        }
+
+        # Include analyst ID for analyst reports
+        if analyst_id and iteration_type == "analyst_report":
+            iteration_entry["analyst"] = analyst_id
+
+        data["research_context"]["research_iterations"].append(iteration_entry)
+        self.save_source_file(data)
+
+        logger.info(
+            f"Logged research iteration: {report_name} "
+            f"({iteration_type}, +{sources_added} sources)"
+        )
 
     def get_thesis_points(self) -> List[Dict[str, Any]]:
         """Get all thesis points from the source file."""

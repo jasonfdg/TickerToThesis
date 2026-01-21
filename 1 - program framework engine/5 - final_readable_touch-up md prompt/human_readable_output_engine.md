@@ -6,14 +6,37 @@
 
 ## Rules
 
-1. Cut every word you can
+1. **Preserve all analytical content** — methodology, evidence, scenarios, sources
 2. Active over passive
 3. Short word over long
 4. Concrete over abstract
 5. Positive over negative
 6. Break rules to avoid awkward writing
 
-**Test:** Would a smart non-expert understand this immediately?
+**Test:** Would a senior PM find all the reasoning they need?
+
+---
+
+## Content Preservation (CRITICAL)
+
+**MUST PRESERVE:**
+- Sensitivity tables and valuation matrices
+- All analytical tensions/debates with full arguments
+- Probability-weighted scenarios with explicit percentages
+- Kill conditions and monitoring frameworks
+- Sources table with citations
+- Position sizing rationale
+- DCF/valuation methodology (not just conclusions)
+
+**MAY TIGHTEN:**
+- Filler phrases and qualifiers
+- Redundant transitions
+- Verbose sentence constructions
+
+**NEVER CUT:**
+- Entire sections or debates
+- Evidence supporting conclusions
+- Numerical analysis or tables
 
 ---
 
@@ -115,9 +138,10 @@
 
 ## Edit in Five Passes
 
-1. **Cut** — 20-30% out. Hunt redundancy, qualifiers, throat-clearing.
+1. **Tighten** — Remove only true redundancy and filler words. Preserve all
+   analytical content, evidence, methodology, and reasoning. Clarity over brevity.
 2. **Activate** — Passive → active. Nouns → verbs.
-3. **Shorten** — Every phrase, every sentence.
+3. **Clarify** — Simplify phrasing without losing meaning.
 4. **Read aloud** — Stumble = rewrite.
 5. **Outsider test** — Unfamiliar reader understands first read?
 

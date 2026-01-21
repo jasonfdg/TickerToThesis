@@ -17,6 +17,7 @@ try:
         get_interim_dir,
         get_output_dir,
         get_synthesis_raw_path,
+        get_source_scout_path,
     )
     from .models import AgentReport, AgentRole, PipelineState
 except ImportError:
@@ -26,6 +27,7 @@ except ImportError:
         get_interim_dir,
         get_output_dir,
         get_synthesis_raw_path,
+        get_source_scout_path,
     )
     from models import AgentReport, AgentRole, PipelineState
 
@@ -183,6 +185,60 @@ generated: {report.timestamp.strftime('%Y-%m-%d')}
         filepath.write_text(content, encoding="utf-8")
         logger.info(f"Saved final memo: {filepath}")
         return filepath
+
+    def save_source_scout(self, report: AgentReport, iteration: int) -> Path:
+        """
+        Save the web research report for an iteration.
+
+        Args:
+            report: The web research AgentReport
+            iteration: The iteration number
+
+        Returns:
+            Path to the saved file
+        """
+        filepath = get_source_scout_path(self.ticker, iteration)
+
+        header = f"""---
+ticker: {self.ticker}
+stage: source_scout
+iteration: {iteration}
+timestamp: {report.timestamp.isoformat()}
+tokens_in: {report.token_usage.input_tokens}
+tokens_out: {report.token_usage.output_tokens}
+---
+
+"""
+        content = header + report.content
+
+        filepath.write_text(content, encoding="utf-8")
+        logger.info(f"Saved web research (iteration {iteration}): {filepath}")
+        return filepath
+
+    def load_source_scout(self, iteration: int) -> Optional[str]:
+        """
+        Load web research report for an iteration.
+
+        Args:
+            iteration: The iteration number
+
+        Returns:
+            The web research content (without metadata header), or None if not found
+        """
+        filepath = get_source_scout_path(self.ticker, iteration)
+
+        if not filepath.exists():
+            return None
+
+        content = filepath.read_text(encoding="utf-8")
+
+        # Strip YAML header if present
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                content = parts[2].strip()
+
+        return content
 
     def save_iteration(
         self,
@@ -352,6 +408,7 @@ generated: {report.timestamp.strftime('%Y-%m-%d')}
         summary = {
             "analyst_reports": 0,
             "rd_reviews": 0,
+            "source_scout_reports": 0,
             "has_synthesis": False,
             "has_final": False,
         }
@@ -363,6 +420,8 @@ generated: {report.timestamp.strftime('%Y-%m-%d')}
                     summary["analyst_reports"] += 1
                 elif f.name.startswith("rd_review_"):
                     summary["rd_reviews"] += 1
+                elif f.name.startswith("source_scout_"):
+                    summary["source_scout_reports"] += 1
 
         # Check for synthesis and final
         summary["has_synthesis"] = get_synthesis_raw_path(self.ticker).exists()

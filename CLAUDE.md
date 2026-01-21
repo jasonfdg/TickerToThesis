@@ -93,7 +93,7 @@ Output: ${TICKER}_memo_vF.md
     └── 6-macro-tactical.md
 
 3 - agent synthesis engine md prompt/
-    └── buyside_memo_engine_v1.2.0.md  # 1,137 lines, main "constitution"
+    └── buyside_memo_engine_v1.3.0.md  # Main "constitution"
 
 5 - final_readable_touch-up md prompt/
     └── human_readable_output_engine.md

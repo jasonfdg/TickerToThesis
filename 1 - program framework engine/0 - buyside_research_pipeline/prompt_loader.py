@@ -15,7 +15,9 @@ try:
         RD_SYNTHESIS_ROLE_PATH,
         MEMO_ENGINE_PATH,
         SOURCE_SUMMARY_AGENT_PATH,
+        SOURCE_SUMMARY_AGENT_V2_PATH,
         HUMAN_READABLE_ENGINE_PATH,
+        SOURCE_SCOUT_AGENT_PATH,
         INVESTING_TYPES,
         get_investing_type_path,
     )
@@ -26,7 +28,9 @@ except ImportError:
         RD_SYNTHESIS_ROLE_PATH,
         MEMO_ENGINE_PATH,
         SOURCE_SUMMARY_AGENT_PATH,
+        SOURCE_SUMMARY_AGENT_V2_PATH,
         HUMAN_READABLE_ENGINE_PATH,
+        SOURCE_SCOUT_AGENT_PATH,
         INVESTING_TYPES,
         get_investing_type_path,
     )
@@ -72,13 +76,23 @@ class PromptLoader:
 
     @property
     def source_summary_agent(self) -> str:
-        """Load the source summary agent prompt."""
+        """Load the source summary agent prompt (v1)."""
         return self._load_file(SOURCE_SUMMARY_AGENT_PATH, "source_summary_agent")
+
+    @property
+    def source_summary_agent_v2(self) -> str:
+        """Load the source summary agent v2 prompt (slim, structured input)."""
+        return self._load_file(SOURCE_SUMMARY_AGENT_V2_PATH, "source_summary_agent_v2")
 
     @property
     def human_readable_engine(self) -> str:
         """Load the human readable output engine prompt."""
         return self._load_file(HUMAN_READABLE_ENGINE_PATH, "human_readable_engine")
+
+    @property
+    def source_scout_agent(self) -> str:
+        """Load the web research agent prompt."""
+        return self._load_file(SOURCE_SCOUT_AGENT_PATH, "source_scout_agent")
 
     def investing_type(self, type_id: int) -> str:
         """
@@ -123,7 +137,9 @@ class PromptLoader:
             "rd_synthesis_role": self.rd_synthesis_role,
             "memo_engine": self.memo_engine,
             "source_summary_agent": self.source_summary_agent,
+            "source_summary_agent_v2": self.source_summary_agent_v2,
             "human_readable_engine": self.human_readable_engine,
+            "source_scout_agent": self.source_scout_agent,
         }
 
         # Load all investing types

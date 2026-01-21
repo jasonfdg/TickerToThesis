@@ -194,6 +194,118 @@ Please provide your Research Director critique following your framework.
         logger.error(f"Source file update failed after {max_retries + 1} attempts")
         return False
 
+    def _build_source_scout_system_prompt(self) -> str:
+        """Build the system prompt for web research agent."""
+        return f"""{self.prompt_loader.source_scout_agent}
+
+---
+
+## Memo Engine (Evidence Standards)
+
+{self.prompt_loader.memo_engine}
+"""
+
+    def _build_source_scout_user_prompt(self, iteration: int, rd_results: dict) -> str:
+        """Build the user prompt for web research agent."""
+        source_content = self.source_manager.get_source_content()
+
+        # Extract RD feedback for each analyst type
+        rd_feedback_section = ""
+        for type_id in range(1, 7):
+            if type_id in rd_results and rd_results[type_id].is_success:
+                type_name = INVESTING_TYPES[type_id]["name"]
+                rd_feedback_section += f"""
+### Research Director Feedback for {type_name} Analyst
+{rd_results[type_id].content}
+
+---
+"""
+
+        return f"""## Task: Web Research for {self.ticker} — Iteration {iteration}
+
+### Company
+- **Ticker**: {self.ticker}
+- **Iteration**: {iteration} of {self.config.num_iterations}
+
+### Research Director Feedback (All Analyst Types)
+The Research Director has reviewed each analyst's report. Extract research questions from their feedback and find evidence.
+
+{rd_feedback_section}
+
+### Current Source File
+```json
+{source_content}
+```
+
+### Instructions
+1. **Extract Research Questions**: Identify specific questions, gaps, or verification requests from RD feedback
+2. **Prioritize Primary Sources**: Hunt for Glassdoor, customer reviews, GitHub activity, Reddit threads, insider transactions
+3. **Verify Claims**: When RD questions a claim, search for evidence that supports OR refutes it
+4. **Document Gaps**: If you can't find evidence for something, note it explicitly
+5. **Output Format**: Follow the web research report template with JSON source additions
+
+Focus on finding evidence that will sharpen the next iteration of analyst work.
+"""
+
+    async def _run_source_scout(self, iteration: int, rd_results: dict) -> None:
+        """Run web research agent after RD reviews to gather evidence for next iteration."""
+        logger.info(f"Phase 3: Running web research agent...")
+
+        call = AgentCall(
+            role=AgentRole.SOURCE_SCOUT,
+            system_prompt=self._build_source_scout_system_prompt(),
+            user_prompt=self._build_source_scout_user_prompt(iteration, rd_results),
+            iteration=iteration,
+            identifier=f"source_scout_iter{iteration}",
+        )
+
+        source_scout_report = await self.agent_runner.run_single(call)
+
+        if source_scout_report.is_success:
+            self.report_saver.save_source_scout(source_scout_report, iteration)
+            logger.info(f"  Web Research: {source_scout_report.token_usage.total_tokens:,} tokens")
+
+            # Update source file with web research findings
+            await self._update_sources_from_source_scout(source_scout_report, iteration)
+        else:
+            logger.warning(f"  Web Research failed: {source_scout_report.error}")
+
+    async def _update_sources_from_source_scout(self, source_scout_report, iteration: int) -> bool:
+        """Update source file with findings from web research agent."""
+        if not source_scout_report.is_success:
+            return False
+
+        update_prompt = self.source_manager.build_source_update_prompt(
+            source_scout_report.content,
+            report_type="source_scout",
+        )
+
+        call = AgentCall(
+            role=AgentRole.SOURCE_SUMMARY,
+            system_prompt=self.prompt_loader.source_summary_agent,
+            user_prompt=update_prompt,
+            iteration=iteration,
+            identifier=f"source_update_source_scout_iter{iteration}",
+        )
+
+        source_response = await self.agent_runner.run_single(call)
+
+        if not source_response.is_success:
+            logger.warning(f"Source summary agent failed for web research: {source_response.error}")
+            return False
+
+        update_success = self.source_manager.update_from_report(
+            source_scout_report.content,
+            source_response.content
+        )
+
+        if update_success:
+            logger.info(f"  Source file updated from web research (iteration {iteration})")
+            return True
+
+        logger.warning(f"  Source file update from web research failed (iteration {iteration})")
+        return False
+
     async def _run_iteration(self, iteration: int) -> None:
         """Run a single debate iteration (analysts + RD reviews)."""
         logger.info(f"{'='*60}")
@@ -249,6 +361,11 @@ Please provide your Research Director critique following your framework.
                 logger.info(f"  RD Review {type_id}: {report.token_usage.total_tokens:,} tokens")
             else:
                 logger.error(f"  RD Review {type_id} failed: {report.error}")
+
+        # Phase 3: Run web research to gather evidence for next iteration
+        # Skip on final iteration since there's no next iteration to inform
+        if iteration < self.config.num_iterations:
+            await self._run_source_scout(iteration, rd_results)
 
         # Calculate totals
         analyst_tokens = sum(r.token_usage.total_tokens for r in analyst_results.values())

@@ -40,7 +40,7 @@ for _env_path in _env_locations:
 try:
     from .agent_runner import AgentCall, AgentRunner, MultiProviderRunner
     from .citation_extractor import CitationExtractor, extract_citations_from_reports
-    from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, clear_output_dir_cache
+    from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache
     from .models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from .prompt_loader import PromptLoader
     from .progress_tracker import ProgressTracker, PhaseType
@@ -50,7 +50,7 @@ try:
 except ImportError:
     from agent_runner import AgentCall, AgentRunner, MultiProviderRunner
     from citation_extractor import CitationExtractor, extract_citations_from_reports
-    from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, clear_output_dir_cache
+    from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache
     from models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from prompt_loader import PromptLoader
     from progress_tracker import ProgressTracker, PhaseType
@@ -583,6 +583,8 @@ Output using Source Scout format with JSON source additions.
 
                 if report.is_success:
                     logger.info(f"  Initial scout ({provider}): {report.token_usage.total_tokens:,} tokens")
+                    # Save the initial scout report
+                    self.report_saver.save_initial_scout(report)
                     # Update source file with findings
                     await self._update_sources_from_source_scout(report, 0)
                     return
@@ -819,7 +821,7 @@ Output using Source Scout format with JSON source additions.
 
         if synthesis_report.is_success:
             # Only save final memo (synthesis v2 includes polish, no need for raw)
-            filepath = self.report_saver.save_final(synthesis_report)
+            filepath = self.report_saver.save_final(synthesis_report, lang="EN")
             logger.info(f"Synthesis complete: {synthesis_report.token_usage.total_tokens:,} tokens")
             logger.info(f"Final memo saved: {filepath}")
         else:
@@ -847,7 +849,7 @@ Output using Source Scout format with JSON source additions.
         self.state.final_report = final_report
 
         if final_report.is_success:
-            filepath = self.report_saver.save_final(final_report)
+            filepath = self.report_saver.save_final(final_report, lang="EN")
             logger.info(f"Final memo saved: {filepath}")
             logger.info(f"Polish complete: {final_report.token_usage.total_tokens:,} tokens")
         else:
@@ -863,7 +865,7 @@ Output using Source Scout format with JSON source additions.
         logger.info("PDF EXPORT: Generating EN and CN PDFs")
         logger.info(f"{'='*60}")
 
-        memo_path = get_final_memo_path(self.ticker)
+        memo_path = get_final_memo_path(self.ticker, lang="EN")
 
         if not memo_path.exists():
             logger.error(f"Final memo not found: {memo_path}")
@@ -1158,7 +1160,8 @@ Output using Source Scout format with JSON source additions.
             self.progress.end_pipeline(self.state)
 
             # Additional logging
-            logger.info(f"Final memo: {get_final_memo_path(self.ticker)}")
+            logger.info(f"Final memo (EN): {get_final_memo_path(self.ticker, 'EN')}")
+            logger.info(f"Final memo (CN): {get_final_memo_path(self.ticker, 'CN')}")
 
             # Log provider stats if using MultiProviderRunner
             if self.config.multi_provider and hasattr(self.agent_runner, 'get_provider_stats'):
@@ -1173,7 +1176,7 @@ Output using Source Scout format with JSON source additions.
                 costs = self.agent_runner.get_cost_estimate()
                 logger.info(f"Estimated cost: ${costs.get('total', 0):.2f}")
 
-            return str(get_final_memo_path(self.ticker))
+            return str(get_final_memo_path(self.ticker, "EN"))
 
         except Exception as e:
             self.state.mark_failed(str(e))

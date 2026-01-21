@@ -14,9 +14,11 @@ try:
     from .config import (
         INVESTING_TYPES,
         get_final_memo_path,
+        get_final_pdf_path,
         get_interim_dir,
         get_output_dir,
-        get_synthesis_raw_path,
+        get_pipeline_state_path,
+        get_initial_scout_path,
         get_source_scout_path,
     )
     from .models import AgentReport, AgentRole, PipelineState
@@ -24,9 +26,11 @@ except ImportError:
     from config import (
         INVESTING_TYPES,
         get_final_memo_path,
+        get_final_pdf_path,
         get_interim_dir,
         get_output_dir,
-        get_synthesis_raw_path,
+        get_pipeline_state_path,
+        get_initial_scout_path,
         get_source_scout_path,
     )
     from models import AgentReport, AgentRole, PipelineState
@@ -39,16 +43,18 @@ class ReportSaver:
     Handles saving and loading of all report artifacts.
 
     Directory structure:
-    2 - report output/$TICKER/
+    2 - report output/TICKER_V#_YYYY-MM-DD/
     ├── interim/
-    │   ├── analyst_type_1_v1.md ... analyst_type_1_v5.md
-    │   ├── analyst_type_2_v1.md ... analyst_type_2_v5.md
-    │   ├── ... (all 6 types × 5 iterations)
-    │   ├── rd_review_type_1_v1.md ... rd_review_type_1_v5.md
-    │   └── ... (all 6 types × 5 iterations)
-    ├── ${TICKER}_webSource.json
-    ├── ${TICKER}_synthesis_raw.md
-    └── ${TICKER}_memo_vF.md
+    │   ├── initial_scout.md                    (genesis phase)
+    │   ├── analyst_*_v1.md ... analyst_*_v5.md (30 files)
+    │   ├── rd_review_*_v1.md ... rd_review_*_v5.md (30 files)
+    │   ├── source_scout_v1.md ... v4.md        (4 files)
+    │   ├── ${TICKER}_webSource.json
+    │   └── ${TICKER}_pipeline_state.json
+    ├── ${TICKER}_memo_EN.md
+    ├── ${TICKER}_memo_EN.pdf
+    ├── ${TICKER}_memo_CN.md
+    └── ${TICKER}_memo_CN.pdf
     """
 
     def __init__(self, ticker: str):
@@ -134,21 +140,21 @@ tokens_out: {report.token_usage.output_tokens}
         logger.debug(f"Saved RD review: {filepath}")
         return filepath
 
-    def save_synthesis(self, report: AgentReport) -> Path:
+    def save_initial_scout(self, report: AgentReport) -> Path:
         """
-        Save the synthesis report.
+        Save the genesis/initial source scout report.
 
         Args:
-            report: The synthesis AgentReport
+            report: The initial source scout AgentReport
 
         Returns:
             Path to the saved file
         """
-        filepath = get_synthesis_raw_path(self.ticker)
+        filepath = get_initial_scout_path(self.ticker)
 
         header = f"""---
 ticker: {self.ticker}
-stage: synthesis
+stage: initial_scout
 timestamp: {report.timestamp.isoformat()}
 tokens_in: {report.token_usage.input_tokens}
 tokens_out: {report.token_usage.output_tokens}
@@ -158,24 +164,26 @@ tokens_out: {report.token_usage.output_tokens}
         content = header + report.content
 
         filepath.write_text(content, encoding="utf-8")
-        logger.info(f"Saved synthesis: {filepath}")
+        logger.info(f"Saved initial scout: {filepath}")
         return filepath
 
-    def save_final(self, report: AgentReport) -> Path:
+    def save_final(self, report: AgentReport, lang: str = "EN") -> Path:
         """
         Save the final polished memo.
 
         Args:
             report: The final AgentReport
+            lang: Language code ("EN" or "CN")
 
         Returns:
             Path to the saved file
         """
-        filepath = get_final_memo_path(self.ticker)
+        filepath = get_final_memo_path(self.ticker, lang)
 
         # Final memo gets minimal header - it's the deliverable
         header = f"""---
 ticker: {self.ticker}
+lang: {lang}
 generated: {report.timestamp.strftime('%Y-%m-%d')}
 ---
 
@@ -183,7 +191,7 @@ generated: {report.timestamp.strftime('%Y-%m-%d')}
         content = header + report.content
 
         filepath.write_text(content, encoding="utf-8")
-        logger.info(f"Saved final memo: {filepath}")
+        logger.info(f"Saved final memo ({lang}): {filepath}")
         return filepath
 
     def save_source_scout(self, report: AgentReport, iteration: int) -> Path:
@@ -384,13 +392,15 @@ tokens_out: {report.token_usage.output_tokens}
         """
         Save the complete pipeline state as JSON.
 
+        Now saved in interim/ folder.
+
         Args:
             state: The PipelineState to save
 
         Returns:
             Path to the saved file
         """
-        filepath = self.output_dir / f"{self.ticker}_pipeline_state.json"
+        filepath = get_pipeline_state_path(self.ticker)
         filepath.write_text(
             json.dumps(state.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -409,8 +419,9 @@ tokens_out: {report.token_usage.output_tokens}
             "analyst_reports": 0,
             "rd_reviews": 0,
             "source_scout_reports": 0,
-            "has_synthesis": False,
-            "has_final": False,
+            "has_initial_scout": False,
+            "has_final_en": False,
+            "has_final_cn": False,
         }
 
         # Count interim files
@@ -423,8 +434,9 @@ tokens_out: {report.token_usage.output_tokens}
                 elif f.name.startswith("source_scout_"):
                     summary["source_scout_reports"] += 1
 
-        # Check for synthesis and final
-        summary["has_synthesis"] = get_synthesis_raw_path(self.ticker).exists()
-        summary["has_final"] = get_final_memo_path(self.ticker).exists()
+        # Check for initial scout and final memos
+        summary["has_initial_scout"] = get_initial_scout_path(self.ticker).exists()
+        summary["has_final_en"] = get_final_memo_path(self.ticker, "EN").exists()
+        summary["has_final_cn"] = get_final_memo_path(self.ticker, "CN").exists()
 
         return summary

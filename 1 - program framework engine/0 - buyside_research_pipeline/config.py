@@ -127,6 +127,7 @@ class PipelineConfig:
 # Multi-provider model configuration
 # Analyst type -> (provider, model) mapping
 # 3 Claude + 3 OpenAI (Gemini excluded from analyst roles)
+# NOTE: Iteration 1 uses GPT-4o-mini for all analysts (see agent_runner.py)
 ANALYST_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
     1: {"provider": "claude", "model": "sonnet"},      # Quality Compounders
     2: {"provider": "claude", "model": "sonnet"},      # Imaginative Growth
@@ -136,11 +137,24 @@ ANALYST_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
     6: {"provider": "openai", "model": "gpt-4o"},      # Macro-Tactical
 }
 
+# RD Review routing by analyst type (3 Claude + 3 Gemini)
+# Types 1-3: Claude Sonnet (consistency with analyst provider)
+# Types 4-6: Gemini 2.5 Pro (best RD quality from benchmark)
+# Mixed providers enable 2x throughput via parallel rate limits
+RD_REVIEW_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
+    1: {"provider": "claude", "model": "sonnet"},           # Quality Compounders
+    2: {"provider": "claude", "model": "sonnet"},           # Imaginative Growth
+    3: {"provider": "claude", "model": "sonnet"},           # Fundamental L/S
+    4: {"provider": "gemini", "model": "gemini-2.5-pro"},   # Deep Value
+    5: {"provider": "gemini", "model": "gemini-2.5-pro"},   # Event-Driven
+    6: {"provider": "gemini", "model": "gemini-2.5-pro"},   # Macro-Tactical
+}
+
 # Role -> (provider, model) mapping for non-analyst calls
 ROLE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
-    "rd_review": {"provider": "claude", "model": "sonnet"},       # Consistent critique
+    "rd_review": {"provider": "claude", "model": "sonnet"},       # Default for non-typed RD calls
     "rd_synthesis": {"provider": "gemini", "model": "gemini-2.5-pro"},  # Better synthesis quality
-    "source_summary": {"provider": "claude", "model": "haiku"},   # Fast, cheap
+    "source_summary": {"provider": "openai", "model": "gpt-4o-mini"},   # Best JSON validity from benchmark
     "human_readable": {"provider": "claude", "model": "sonnet"},  # Preserve depth
     "source_scout": {"provider": "perplexity", "model": "sonar"}, # Real web search
 }
@@ -271,22 +285,50 @@ def get_interim_dir(ticker: str) -> Path:
 
 
 def get_source_file_path(ticker: str) -> Path:
-    """Get the path to the source file for a specific ticker."""
-    return get_output_dir(ticker) / f"{ticker}_webSource.json"
+    """Get the path to the source file for a specific ticker.
 
-
-def get_synthesis_raw_path(ticker: str) -> Path:
-    """Get the path to the raw synthesis output for a ticker."""
-    return get_output_dir(ticker) / f"{ticker}_synthesis_raw.md"
-
-
-def get_final_memo_path(ticker: str) -> Path:
-    """Get the path to the final polished memo for a ticker.
-
-    Naming convention: TICKER_memo_vF_YYYY-MM-DD.md
+    Now stored in interim/ folder.
     """
-    date_str = _get_current_date()
-    return get_output_dir(ticker) / f"{ticker}_memo_vF_{date_str}.md"
+    return get_interim_dir(ticker) / f"{ticker}_webSource.json"
+
+
+def get_pipeline_state_path(ticker: str) -> Path:
+    """Get the path to the pipeline state file for a ticker.
+
+    Now stored in interim/ folder.
+    """
+    return get_interim_dir(ticker) / f"{ticker}_pipeline_state.json"
+
+
+def get_initial_scout_path(ticker: str) -> Path:
+    """Get the path to the genesis/initial source scout report."""
+    return get_interim_dir(ticker) / "initial_scout.md"
+
+
+def get_final_memo_path(ticker: str, lang: str = "EN") -> Path:
+    """Get the path to the final memo for a ticker.
+
+    Args:
+        ticker: Stock ticker symbol
+        lang: Language code ("EN" or "CN")
+
+    Naming convention: TICKER_memo_LANG.md (e.g., AAPL_memo_EN.md)
+    """
+    ticker = ticker.upper()
+    return get_output_dir(ticker) / f"{ticker}_memo_{lang}.md"
+
+
+def get_final_pdf_path(ticker: str, lang: str = "EN") -> Path:
+    """Get the path to the final PDF for a ticker.
+
+    Args:
+        ticker: Stock ticker symbol
+        lang: Language code ("EN" or "CN")
+
+    Naming convention: TICKER_memo_LANG.pdf (e.g., AAPL_memo_EN.pdf)
+    """
+    ticker = ticker.upper()
+    return get_output_dir(ticker) / f"{ticker}_memo_{lang}.pdf"
 
 
 def get_source_scout_path(ticker: str, iteration: int) -> Path:

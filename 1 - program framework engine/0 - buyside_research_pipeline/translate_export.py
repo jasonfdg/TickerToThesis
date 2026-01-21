@@ -186,9 +186,12 @@ async def run_pipeline(
             logger.error(error)
             results["errors"].append(error)
     elif pdf_zh and not translate:
-        # Look for existing Chinese memo
-        zh_memo_pattern = memo_path.stem + "_zh.md"
-        zh_memo_path = memo_path.parent / zh_memo_pattern
+        # Look for existing Chinese memo (new naming: _EN -> _CN, or legacy _zh suffix)
+        stem = memo_path.stem
+        if stem.endswith("_EN"):
+            zh_memo_path = memo_path.parent / f"{stem[:-3]}_CN.md"
+        else:
+            zh_memo_path = memo_path.parent / f"{stem}_zh.md"
         if zh_memo_path.exists():
             try:
                 logger.info("Generating Chinese PDF from existing translation...")

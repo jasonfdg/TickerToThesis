@@ -242,9 +242,14 @@ class MemoTranslator:
 
         # Determine output path
         if output_path is None:
-            # {TICKER}_memo_vF_{date}.md -> {TICKER}_memo_vF_{date}_zh.md
+            # {TICKER}_memo_EN.md -> {TICKER}_memo_CN.md
             stem = memo_path.stem
-            output_path = memo_path.parent / f"{stem}_zh.md"
+            if stem.endswith("_EN"):
+                new_stem = stem[:-3] + "_CN"
+            else:
+                # Fallback for legacy naming
+                new_stem = f"{stem}_zh"
+            output_path = memo_path.parent / f"{new_stem}.md"
 
         # Save translated memo
         output_path.write_text(translated_content, encoding="utf-8")

@@ -229,7 +229,7 @@
 |---|--------|------|------|---------|
 | 1 | [Name] | [URL] | Fact/Opinion/Primary/Source File | [1 sentence] |
 
-**Minimum: 3 sources with links.** If unavailable, explain why.
+**Cite ALL relevant sources. No limit.** Minimum: 3 sources with links. If unavailable, explain why.
 
 ---
 

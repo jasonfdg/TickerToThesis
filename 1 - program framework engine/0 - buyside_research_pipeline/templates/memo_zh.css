@@ -1,0 +1,387 @@
+/* Chinese Investment Memo Stylesheet */
+/* Professional buyside research - Simplified Chinese */
+/* Based on institutional hedge fund formatting standards */
+
+@charset "UTF-8";
+
+/* ===== WEB FONTS ===== */
+/* Noto Sans SC from Google Fonts - enables reliable CJK rendering in WeasyPrint */
+@font-face {
+    font-family: "Noto Sans SC";
+    src: url('https://fonts.gstatic.com/s/notosanssc/v36/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYw.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Noto Sans SC";
+    src: url('https://fonts.gstatic.com/s/notosanssc/v36/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_EnYwxBtA.woff2') format('woff2');
+    font-weight: 700;
+    font-style: normal;
+}
+
+/* ===== PAGE SETUP ===== */
+@page {
+    size: A4;
+    margin: 1.5cm 1.5cm;
+    @top-right {
+        content: counter(page);
+        font-family: "Noto Sans SC", sans-serif;
+        font-size: 9pt;
+        color: #666;
+    }
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+/* ===== BASE TYPOGRAPHY ===== */
+body {
+    font-family: "Noto Sans SC", sans-serif;
+    font-size: 9pt;
+    line-height: 1.4;
+    color: #1a1a1a;
+    margin: 0;
+    padding: 0;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Container */
+.memo {
+    max-width: 100%;
+    word-break: normal;
+    overflow-wrap: break-word;
+}
+
+/* ===== HEADERS ===== */
+h1 {
+    font-family: "Noto Sans SC", sans-serif;
+    font-size: 16pt;
+    font-weight: 700;
+    color: #1a1a1a;
+    margin: 0 0 0.4em 0;
+    padding-bottom: 0.2em;
+    border-bottom: 1.5px solid #333;
+}
+
+h2 {
+    font-family: "Noto Sans SC", sans-serif;
+    font-size: 11pt;
+    font-weight: 700;
+    color: #1a1a1a;
+    margin: 1em 0 0.3em 0;
+    padding-bottom: 0.15em;
+    border-bottom: 0.5px solid #ccc;
+}
+
+h3 {
+    font-family: "Noto Sans SC", sans-serif;
+    font-size: 10pt;
+    font-weight: 700;
+    color: #2a2a2a;
+    margin: 0.8em 0 0.25em 0;
+}
+
+h4 {
+    font-family: "Noto Sans SC", sans-serif;
+    font-size: 9pt;
+    font-weight: 700;
+    color: #333;
+    margin: 0.6em 0 0.2em 0;
+}
+
+/* ===== PARAGRAPHS ===== */
+p {
+    margin: 0 0 0.5em 0;
+    text-align: justify;
+    text-justify: inter-ideograph;
+}
+
+/* First paragraph after h1 - Executive Summary styling */
+h1 + p {
+    font-size: 11pt;
+    line-height: 1.7;
+    color: #333;
+    padding: 0.8em 1em;
+    background-color: #f7f9fb;
+    border-left: 4px solid #333;
+    margin-bottom: 1.2em;
+}
+
+/* ===== TEXT STYLING ===== */
+strong {
+    font-weight: 700;
+    color: #1a1a1a;
+}
+
+/* Chinese doesn't use italic */
+em {
+    font-style: normal;
+    font-weight: 500;
+    color: #1a1a1a;
+}
+
+/* ===== LISTS ===== */
+ul, ol {
+    margin: 0.3em 0 0.5em 0;
+    padding-left: 1.4em;
+}
+
+ul {
+    list-style-type: disc;
+}
+
+ul ul {
+    list-style-type: circle;
+    margin: 0.3em 0 0.3em 0;
+}
+
+ol {
+    list-style-type: decimal;
+}
+
+li {
+    margin-bottom: 0.15em;
+    line-height: 1.35;
+}
+
+li > p {
+    margin-bottom: 0.3em;
+}
+
+/* ===== TABLES ===== */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.2em 0;
+    font-size: 9.5pt;
+    page-break-inside: avoid;
+}
+
+thead {
+    background-color: #333;
+    color: white;
+}
+
+th {
+    font-family: "Noto Sans SC", sans-serif;
+    font-weight: 700;
+    font-size: 9pt;
+    padding: 10px 12px;
+    text-align: left;
+    border: 1px solid #333;
+    white-space: nowrap;
+}
+
+td {
+    padding: 9px 12px;
+    border: 1px solid #ddd;
+    vertical-align: top;
+    line-height: 1.5;
+}
+
+/* Center-align all table cells */
+td {
+    text-align: center;
+}
+
+/* First column left-aligned for labels */
+td:first-child {
+    text-align: left;
+    font-weight: 500;
+}
+
+th {
+    text-align: center;
+}
+
+th:first-child {
+    text-align: left;
+}
+
+tbody tr:nth-child(odd) {
+    background-color: #ffffff;
+}
+
+tbody tr:nth-child(even) {
+    background-color: #f8f9fa;
+}
+
+/* ===== BLOCKQUOTES ===== */
+blockquote {
+    margin: 1.2em 0;
+    padding: 1em 1.2em;
+    border-left: 4px solid #333;
+    background-color: #f8f9fb;
+    font-style: normal;
+    color: #333;
+    page-break-inside: avoid;
+}
+
+blockquote p {
+    margin: 0;
+    text-align: left;
+}
+
+blockquote p + p {
+    margin-top: 0.6em;
+}
+
+/* ===== CODE ===== */
+code {
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 9.5pt;
+    background-color: #f0f0f0;
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    color: #c7254e;
+}
+
+pre {
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 9pt;
+    background-color: #f8f9fa;
+    padding: 1em 1.2em;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    line-height: 1.5;
+}
+
+/* ===== LINKS ===== */
+a {
+    color: #1a1a1a;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* ===== HORIZONTAL RULES ===== */
+hr {
+    border: none;
+    border-top: 1px solid #ddd;
+    margin: 2em 0;
+}
+
+/* ===== FINANCIAL STYLING CLASSES ===== */
+.negative, .bear, .red {
+    color: #c1121f;
+    font-weight: 500;
+}
+
+.positive, .bull, .green {
+    color: #1e7b34;
+    font-weight: 500;
+}
+
+/* ===== SPECIAL CALLOUT BOXES ===== */
+.executive-summary {
+    background-color: #f0f4f8;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 1.2em;
+    margin: 1.2em 0;
+}
+
+.key-metric {
+    font-size: 13pt;
+    font-weight: 700;
+    color: #1a1a1a;
+}
+
+.risk-callout {
+    background-color: #fff8e6;
+    border: 1px solid #e6a700;
+    border-left-width: 4px;
+    border-radius: 4px;
+    padding: 1em;
+    margin: 1.2em 0;
+}
+
+.kill-condition {
+    background-color: #fdf2f2;
+    border: 1px solid #c1121f;
+    border-left-width: 4px;
+    border-radius: 4px;
+    padding: 1em;
+    margin: 1.2em 0;
+}
+
+/* ===== FOOTER ===== */
+.memo-footer {
+    margin-top: 3em;
+    padding-top: 1em;
+    border-top: 1px solid #ddd;
+    font-size: 8.5pt;
+    color: #666;
+}
+
+.generated-date {
+    text-align: right;
+}
+
+/* ===== PAGE BREAK HELPERS ===== */
+.page-break {
+    page-break-after: always;
+}
+
+.avoid-break {
+    page-break-inside: avoid;
+}
+
+h2, h3, h4 {
+    page-break-after: avoid;
+}
+
+/* Sources list - smaller text */
+.memo > ul:last-of-type,
+.memo ul:last-child {
+    font-size: 8pt;
+    color: #666;
+    line-height: 1.4;
+}
+
+.memo > ul:last-of-type li,
+.memo ul:last-child li {
+    margin-bottom: 0.2em;
+}
+
+/* ===== PRINT OPTIMIZATION ===== */
+@media print {
+    body {
+        font-size: 10pt;
+        line-height: 1.55;
+    }
+
+    h1 {
+        font-size: 18pt;
+    }
+
+    h2 {
+        font-size: 12pt;
+    }
+
+    h3 {
+        font-size: 11pt;
+    }
+
+    table {
+        font-size: 9pt;
+    }
+
+    a {
+        color: #1a1a1a;
+    }
+
+    a[href]::after {
+        content: none;
+    }
+}

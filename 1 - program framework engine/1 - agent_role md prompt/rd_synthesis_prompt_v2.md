@@ -86,7 +86,7 @@ Follow this structure, ensuring each section reflects our unified view:
 6. **Catalysts** — Milestone-bound, not calendar dates
 7. **Risks & Kill Conditions** — Specific, verifiable thresholds
 8. **Position Sizing Rationale** — Why this size, scaling plan
-9. **Sources** — Table with citations
+9. **Sources** — Table with ALL citations used. No limit on count.
 
 **On Preserving Analysis:**
 - Include the methodology, not just conclusions. "Fair value $195" is insufficient;

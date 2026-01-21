@@ -43,16 +43,20 @@ try:
     from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, clear_output_dir_cache
     from .models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from .prompt_loader import PromptLoader
+    from .progress_tracker import ProgressTracker, PhaseType
     from .report_saver import ReportSaver
     from .source_manager import SourceManager
+    from .translate_export import run_pipeline as run_translate_export
 except ImportError:
     from agent_runner import AgentCall, AgentRunner, MultiProviderRunner
     from citation_extractor import CitationExtractor, extract_citations_from_reports
     from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, clear_output_dir_cache
     from models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from prompt_loader import PromptLoader
+    from progress_tracker import ProgressTracker, PhaseType
     from report_saver import ReportSaver
     from source_manager import SourceManager
+    from translate_export import run_pipeline as run_translate_export
 
 # Configure logging
 logging.basicConfig(
@@ -101,6 +105,15 @@ class TickerToThesisPipeline:
         self.state = PipelineState(
             ticker=self.ticker,
             preliminary_thinking=self.preliminary_thinking,
+        )
+
+        # Initialize progress tracker
+        self.progress = ProgressTracker(
+            ticker=self.ticker,
+            num_iterations=self.config.num_iterations,
+            num_analysts=len(INVESTING_TYPES),
+            provider_factory=getattr(self.agent_runner, 'provider_factory', None),
+            log_file=str(self.config.log_dir / f"{self.ticker}_progress.log") if self.config.log_dir else None,
         )
 
     def _build_analyst_system_prompt(self, type_id: int) -> str:
@@ -520,6 +533,68 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         logger.warning(f"  Source file update from web research failed (iteration {iteration})")
         return False
 
+    async def _run_initial_source_scout(self) -> None:
+        """Run source scout to gather baseline data before iteration 1.
+
+        This establishes foundational data (price, filings, earnings, news)
+        so analysts don't hallucinate outdated information in iteration 1.
+        """
+        logger.info("Running initial source scout to establish baseline data...")
+
+        system_prompt = self._build_source_scout_system_prompt()
+        user_prompt = f"""## Task: Initial Data Collection for {self.ticker}
+
+### Company
+- **Ticker**: {self.ticker}
+
+### User's Research Focus
+{self.preliminary_thinking}
+
+### Instructions
+Gather baseline data to ground analyst work:
+1. Current stock price, 52-week range, market cap
+2. Latest SEC filings (10-K, 10-Q dates, recent 8-Ks)
+3. Most recent earnings call date and key highlights
+4. Top 3-5 recent news items
+5. Analyst consensus (if available)
+
+Output using Source Scout format with JSON source additions.
+"""
+
+        # Use same fallback chain as regular source scout
+        fallback_providers = [
+            ("perplexity", "sonar"),
+            ("gemini", "gemini-2.0-flash"),
+            ("claude", "sonnet"),
+        ]
+
+        for provider, model in fallback_providers:
+            try:
+                call = AgentCall(
+                    role=AgentRole.SOURCE_SCOUT,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    iteration=0,
+                    identifier=f"initial_scout_{provider}",
+                    provider=provider,
+                    model=model,
+                )
+                report = await self.agent_runner.run_single(call)
+
+                if report.is_success:
+                    logger.info(f"  Initial scout ({provider}): {report.token_usage.total_tokens:,} tokens")
+                    # Update source file with findings
+                    await self._update_sources_from_source_scout(report, 0)
+                    return
+                else:
+                    logger.warning(f"  Initial scout failed with {provider}: {report.error}")
+
+            except Exception as e:
+                logger.warning(f"  Initial scout exception with {provider}: {e}")
+                continue
+
+        logger.error("Initial source scout failed with all providers")
+
     async def _run_iteration_1(self) -> None:
         """Run iteration 1 (genesis): Initial analyst reports and RD reviews."""
         logger.info(f"{'='*60}")
@@ -743,8 +818,7 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         self.state.final_report = synthesis_report
 
         if synthesis_report.is_success:
-            # Save as both synthesis_raw (for reference) and final memo
-            self.report_saver.save_synthesis(synthesis_report)
+            # Only save final memo (synthesis v2 includes polish, no need for raw)
             filepath = self.report_saver.save_final(synthesis_report)
             logger.info(f"Synthesis complete: {synthesis_report.token_usage.total_tokens:,} tokens")
             logger.info(f"Final memo saved: {filepath}")
@@ -778,6 +852,47 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
             logger.info(f"Polish complete: {final_report.token_usage.total_tokens:,} tokens")
         else:
             raise RuntimeError(f"Polish failed: {final_report.error}")
+
+    async def _run_pdf_export(self) -> dict:
+        """Generate translated Chinese version and PDFs (EN + CN).
+
+        Returns:
+            Dict with results from translate_export pipeline.
+        """
+        logger.info(f"{'='*60}")
+        logger.info("PDF EXPORT: Generating EN and CN PDFs")
+        logger.info(f"{'='*60}")
+
+        memo_path = get_final_memo_path(self.ticker)
+
+        if not memo_path.exists():
+            logger.error(f"Final memo not found: {memo_path}")
+            return {"errors": ["Final memo not found"]}
+
+        try:
+            results = await run_translate_export(
+                target=str(memo_path),
+                translate=True,   # Translate to Chinese
+                pdf_en=True,      # Generate English PDF
+                pdf_zh=True,      # Generate Chinese PDF
+            )
+
+            if results.get("pdf_en"):
+                logger.info(f"English PDF: {results['pdf_en'].output_path.name}")
+            if results.get("pdf_zh"):
+                logger.info(f"Chinese PDF: {results['pdf_zh'].output_path.name}")
+            if results.get("translation"):
+                logger.info(f"Chinese memo: {results['translation'].target_path.name}")
+
+            if results.get("errors"):
+                for err in results["errors"]:
+                    logger.warning(f"PDF export warning: {err}")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"PDF export failed: {e}")
+            return {"errors": [str(e)]}
 
     async def _update_sources_from_reports(
         self,
@@ -999,33 +1114,50 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         logger.info(f"{'='*60}")
 
         self.state.mark_started()
+        self.progress.start_pipeline()
 
         try:
             # Pre-load all prompts
             prompt_stats = self.prompt_loader.load_all()
             logger.info(f"Loaded {len(prompt_stats)} prompts")
 
+            # Run initial source scout to establish baseline data
+            self.progress.start_genesis()
+            await self._run_initial_source_scout()
+            # Estimate genesis cost (rough: ~2K tokens at $0.003/1K)
+            self.progress.end_genesis(tokens=2000, cost=0.006)
+
             # Run iteration 1 (genesis)
+            self.progress.start_iteration(1)
             await self._run_iteration_1()
+            self.progress.end_iteration(self.state.iterations[1])
 
             # Run subsequent iterations (debate)
             for iteration in range(2, self.config.num_iterations + 1):
+                self.progress.start_iteration(iteration)
                 await self._run_iteration(iteration)
+                self.progress.end_iteration(self.state.iterations[iteration])
 
             # Run synthesis (1-step: includes polish, uses Gemini)
+            self.progress.start_phase(PhaseType.SYNTHESIS, 1)
             await self._run_synthesis()
+            synthesis_tokens = self.state.synthesis_report.token_usage.total_tokens if self.state.synthesis_report else 0
+            # Estimate synthesis cost (Gemini pricing ~$0.00025/1K input, $0.001/1K output)
+            synthesis_cost = synthesis_tokens * 0.0005 / 1000
+            self.progress.end_phase(PhaseType.SYNTHESIS, synthesis_tokens, synthesis_cost)
+
+            # Generate PDFs (EN + CN) after synthesis
+            await self._run_pdf_export()
 
             self.state.mark_completed()
 
             # Save final state
             self.report_saver.save_pipeline_state(self.state)
 
-            # Summary
-            logger.info(f"{'='*60}")
-            logger.info("PIPELINE COMPLETE")
-            logger.info(f"{'='*60}")
-            logger.info(f"Total tokens: {self.state.total_token_usage.total_tokens:,}")
-            logger.info(f"Duration: {self.state.duration_seconds:.1f}s")
+            # Progress tracker final summary
+            self.progress.end_pipeline(self.state)
+
+            # Additional logging
             logger.info(f"Final memo: {get_final_memo_path(self.ticker)}")
 
             # Log provider stats if using MultiProviderRunner

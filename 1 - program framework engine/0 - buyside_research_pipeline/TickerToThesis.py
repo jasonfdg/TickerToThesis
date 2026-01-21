@@ -10,6 +10,7 @@ through 5 debate iterations with a Research Director.
 Usage:
     python TickerToThesis.py AAPL "preliminary thinking about the company..."
     python TickerToThesis.py --ticker AAPL --thinking "preliminary thinking..."
+    python TickerToThesis.py AAPL "thinking..." --no-gui  # Disable dashboard
 """
 
 import argparse
@@ -20,7 +21,11 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dashboard.emitter import ProgressEmitter
+    from dashboard.server import DashboardServer
 
 # Load .env file from project root or pipeline directory
 from dotenv import load_dotenv
@@ -82,10 +87,12 @@ class TickerToThesisPipeline:
         ticker: str,
         preliminary_thinking: str,
         config: Optional[PipelineConfig] = None,
+        emitter: Optional["ProgressEmitter"] = None,
     ):
         self.ticker = ticker.upper()
         self.preliminary_thinking = preliminary_thinking
         self.config = config or PipelineConfig()
+        self.emitter = emitter
 
         # Initialize components
         self.prompt_loader = PromptLoader()
@@ -107,14 +114,161 @@ class TickerToThesisPipeline:
             preliminary_thinking=self.preliminary_thinking,
         )
 
-        # Initialize progress tracker
+        # Initialize progress tracker with optional dashboard emitter
         self.progress = ProgressTracker(
             ticker=self.ticker,
             num_iterations=self.config.num_iterations,
             num_analysts=len(INVESTING_TYPES),
             provider_factory=getattr(self.agent_runner, 'provider_factory', None),
             log_file=str(self.config.log_dir / f"{self.ticker}_progress.log") if self.config.log_dir else None,
+            emitter=emitter,
         )
+
+        # Thesis evolution tracking for dashboard
+        self._previous_thesis_summary: Optional[str] = None
+
+    # Analyst type names for dashboard display
+    ANALYST_NAMES = {
+        1: "Quality Compounders",
+        2: "Imaginative Growth",
+        3: "Fundamental L/S",
+        4: "Deep Value",
+        5: "Event-Driven",
+        6: "Macro-Tactical",
+    }
+
+    def _emit_cost_update(self) -> None:
+        """Emit current cost breakdown to dashboard.
+
+        Gets cost estimates from the provider factory (if using MultiProviderRunner)
+        and emits them to the progress tracker for dashboard display.
+        """
+        if not self.emitter:
+            return
+
+        try:
+            # Only MultiProviderRunner has get_cost_estimate()
+            if hasattr(self.agent_runner, 'get_cost_estimate'):
+                costs = self.agent_runner.get_cost_estimate()
+                self.progress.emit_cost_update(
+                    claude_cli=costs.get("claude-cli", 0.0),
+                    openai=costs.get("openai", 0.0),
+                    gemini=costs.get("gemini", 0.0),
+                )
+        except Exception as e:
+            logger.debug(f"Could not emit cost update: {e}")
+
+    async def _generate_thesis_summary(
+        self,
+        iteration: int,
+        analyst_reports: Dict[int, AgentReport],
+        rd_reviews: Dict[int, AgentReport],
+    ) -> None:
+        """Generate and emit thesis evolution summary for dashboard.
+
+        Called after RD reviews complete to provide a concise summary of
+        thesis evolution for the dashboard's Thesis Evolution panel.
+        """
+        if not self.emitter:
+            return
+
+        try:
+            # Import summarizer (optional dependency)
+            try:
+                from dashboard.summarizer import generate_thesis_summary
+            except ImportError:
+                logger.debug("Dashboard summarizer not available")
+                return
+
+            # Extract conclusions from analyst reports (last 500 chars of each)
+            analyst_excerpts = {
+                tid: report.content[-500:]
+                for tid, report in analyst_reports.items()
+                if report.is_success
+            }
+
+            # Extract critiques from RD reviews (first 300 chars of each)
+            rd_excerpts = {
+                tid: review.content[:300]
+                for tid, review in rd_reviews.items()
+                if review.is_success
+            }
+
+            # Get provider factory for API call
+            provider_factory = getattr(self.agent_runner, 'provider_factory', None)
+
+            # Generate summary
+            summary = await generate_thesis_summary(
+                iteration=iteration,
+                analyst_reports=analyst_excerpts,
+                rd_critiques=rd_excerpts,
+                previous_summary=self._previous_thesis_summary,
+                provider_factory=provider_factory,
+            )
+
+            # Store for next iteration
+            self._previous_thesis_summary = summary
+
+            # Emit to dashboard
+            self.progress.emit_thesis_summary(iteration, summary)
+            logger.debug(f"Thesis summary for iteration {iteration}: {summary[:100]}...")
+
+        except Exception as e:
+            logger.warning(f"Failed to generate thesis summary: {e}")
+
+    def _format_analyst_summaries_for_rd(self, exclude_type_id: int) -> Optional[str]:
+        """
+        Format analyst summaries for RD review prompt, excluding the current analyst.
+
+        This provides the RD with cross-analyst context so they can highlight
+        impactful findings from other analysts when relevant.
+
+        Args:
+            exclude_type_id: Analyst type to exclude (the one being reviewed)
+
+        Returns:
+            Formatted markdown string of other analysts' summaries,
+            or None if no summaries are available.
+        """
+        summaries_data = self.source_manager.get_analyst_summaries()
+
+        if not summaries_data or not summaries_data.get("summaries"):
+            return None
+
+        iteration = summaries_data.get("iteration", "?")
+        summaries = summaries_data.get("summaries", [])
+
+        # Filter out the analyst being reviewed
+        other_summaries = [
+            s for s in summaries
+            if s.get("type_id") != exclude_type_id
+        ]
+
+        if not other_summaries:
+            return None
+
+        # Build formatted markdown
+        lines = [
+            f"## Other Analysts' Key Findings (Iteration {iteration})",
+            "",
+        ]
+
+        for s in other_summaries:
+            type_name = s.get("type_name", f"Analyst {s.get('type_id', '?')}")
+            position = s.get("position", "?")
+            target = s.get("target_price", "")
+            summary = s.get("summary", "")
+
+            # Format: **Quality Compounder** — LONG @ $85
+            header = f"**{type_name}** — {position}"
+            if target:
+                header += f" @ {target}"
+
+            lines.append(header)
+            lines.append(summary)
+            lines.append("")
+
+        return "\n".join(lines)
 
     def _build_analyst_system_prompt(self, type_id: int) -> str:
         """Build the system prompt for an analyst agent."""
@@ -244,9 +398,28 @@ Remember: A memo without a position is noise. Refine, don't retreat.
         iteration: int,
         analyst_report: str,
         previous_rd_feedback: Optional[str] = None,
+        analyst_summaries_md: Optional[str] = None,
     ) -> str:
-        """Build the user prompt for RD review."""
+        """Build the user prompt for RD review.
+
+        Args:
+            type_id: Analyst type being reviewed (1-6)
+            iteration: Current iteration number
+            analyst_report: The analyst's report content
+            previous_rd_feedback: RD's feedback from previous iteration (for engagement assessment)
+            analyst_summaries_md: Formatted markdown of other analysts' summaries (for cross-analyst context)
+        """
         type_name = self.prompt_loader.investing_type_name(type_id)
+
+        # Build cross-analyst context section
+        cross_analyst_section = ""
+        if analyst_summaries_md:
+            cross_analyst_section = f"""
+{analyst_summaries_md}
+
+---
+
+"""
 
         # Build engagement assessment section for iterations 2+
         engagement_section = ""
@@ -288,7 +461,7 @@ Complete this assessment:
 """
 
         base_instructions = f"""## Task: Review {type_name} Analysis of {self.ticker} (Iteration {iteration})
-
+{cross_analyst_section}
 ### Analyst Report
 {analyst_report}
 {engagement_section}
@@ -528,6 +701,8 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
 
         if update_success:
             logger.info(f"  Source file updated from web research (iteration {iteration})")
+            # Emit source update event for dashboard
+            self.progress.emit_source_updated(new_citations=1)  # Web research typically adds sources
             return True
 
         logger.warning(f"  Source file update from web research failed (iteration {iteration})")
@@ -587,6 +762,8 @@ Output using Source Scout format with JSON source additions.
                     self.report_saver.save_initial_scout(report)
                     # Update source file with findings
                     await self._update_sources_from_source_scout(report, 0)
+                    # Emit cost update for dashboard
+                    self._emit_cost_update()
                     return
                 else:
                     logger.warning(f"  Initial scout failed with {provider}: {report.error}")
@@ -596,6 +773,7 @@ Output using Source Scout format with JSON source additions.
                 continue
 
         logger.error("Initial source scout failed with all providers")
+        self._emit_cost_update()
 
     async def _run_iteration_1(self) -> None:
         """Run iteration 1 (genesis): Initial analyst reports and RD reviews."""
@@ -608,6 +786,11 @@ Output using Source Scout format with JSON source additions.
 
         # Phase 1: Run 6 parallel analyst calls
         logger.info("Phase 1: Running 6 parallel analyst calls...")
+
+        # Emit agent started events
+        for type_id in range(1, 7):
+            self.progress.emit_agent_started("analyst", type_id, self.ANALYST_NAMES.get(type_id, f"Analyst {type_id}"))
+
         analyst_calls = []
         for type_id in range(1, 7):
             call = AgentCall(
@@ -622,54 +805,71 @@ Output using Source Scout format with JSON source additions.
         analyst_reports = await self.agent_runner.run_analyst_batch(analyst_calls)
         iteration_state.analyst_reports = analyst_reports
 
-        # Save analyst reports
+        # Save analyst reports and emit completion events
         for type_id, report in analyst_reports.items():
             if report.is_success:
                 self.report_saver.save_analyst_report(report)
+                self.progress.emit_agent_completed("analyst", type_id, report.token_usage.total_tokens, True)
                 logger.info(
                     f"  Analyst {type_id} ({self.prompt_loader.investing_type_name(type_id)}): "
                     f"{report.token_usage.total_tokens:,} tokens"
                 )
+            else:
+                self.progress.emit_agent_failed("analyst", type_id, report.error or "Unknown error")
 
-        # Phase 2 & 3: Run source update AND RD reviews in parallel
-        # Source update doesn't affect RD reviews (they review analyst reports, not sources)
-        logger.info("Phase 2+3: Updating sources AND running RD reviews in parallel...")
+        # Emit cost update after analyst phase
+        self._emit_cost_update()
 
-        # Build RD review calls
+        # Phase 2: Source update (extracts citations AND analyst_summaries)
+        # Must complete before RD reviews so summaries are available for cross-analyst context
+        logger.info("Phase 2: Updating sources (citations + analyst summaries)...")
+        source_updated = await self._update_sources_from_reports(analyst_reports, 1)
+        iteration_state.source_updated = source_updated
+
+        # Phase 3: RD reviews with cross-analyst summaries
+        logger.info("Phase 3: Running 6 parallel RD reviews (with cross-analyst context)...")
+
+        # Build RD review calls with analyst summaries injected
         rd_calls = []
         for type_id in range(1, 7):
             if type_id in analyst_reports and analyst_reports[type_id].is_success:
+                # Get summaries of OTHER analysts for cross-analyst context
+                summaries_md = self._format_analyst_summaries_for_rd(exclude_type_id=type_id)
                 call = AgentCall(
                     role=AgentRole.RD_REVIEW,
                     system_prompt=self._build_rd_review_system_prompt(),
                     user_prompt=self._build_rd_review_user_prompt(
-                        type_id, 1, analyst_reports[type_id].content
+                        type_id, 1, analyst_reports[type_id].content,
+                        analyst_summaries_md=summaries_md,
                     ),
                     investing_type_id=type_id,
                     iteration=1,
                 )
                 rd_calls.append(call)
 
-        # Run both in parallel - source update doesn't block RD reviews
-        source_task = asyncio.create_task(
-            self._update_sources_from_reports(analyst_reports, 1)
-        )
-        rd_task = asyncio.create_task(
-            self.agent_runner.run_rd_review_batch(rd_calls)
-        )
-
-        # Wait for both to complete
-        source_updated, rd_reviews = await asyncio.gather(source_task, rd_task)
-        iteration_state.source_updated = source_updated
+        rd_reviews = await self.agent_runner.run_rd_review_batch(rd_calls)
         iteration_state.rd_reviews = rd_reviews
 
-        # Save RD reviews
+        # Emit RD started events
+        for type_id in range(1, 7):
+            self.progress.emit_agent_started("rd_review", type_id, f"RD Review {type_id}")
+
+        # Save RD reviews and emit completion events
         for type_id, review in rd_reviews.items():
             if review.is_success:
                 self.report_saver.save_rd_review(review)
+                self.progress.emit_agent_completed("rd_review", type_id, review.token_usage.total_tokens, True)
                 logger.info(
                     f"  RD Review {type_id}: {review.token_usage.total_tokens:,} tokens"
                 )
+            else:
+                self.progress.emit_agent_failed("rd_review", type_id, review.error or "Unknown error")
+
+        # Emit cost update after RD review phase
+        self._emit_cost_update()
+
+        # Generate thesis summary for dashboard
+        await self._generate_thesis_summary(1, analyst_reports, rd_reviews)
 
         # Phase 4: Run web research to gather evidence for next iteration
         await self._run_source_scout(1, rd_reviews)
@@ -722,57 +922,78 @@ Output using Source Scout format with JSON source additions.
                 f"Check interim/ directory for missing analyst_*_v{iteration-1}.md or rd_review_*_v{iteration-1}.md files."
             )
 
+        # Emit agent started events
+        for type_id in range(1, 7):
+            self.progress.emit_agent_started("analyst", type_id, self.ANALYST_NAMES.get(type_id, f"Analyst {type_id}"))
+
         analyst_reports = await self.agent_runner.run_analyst_batch(analyst_calls)
         iteration_state.analyst_reports = analyst_reports
 
-        # Save analyst reports
+        # Save analyst reports and emit completion events
         for type_id, report in analyst_reports.items():
             if report.is_success:
                 self.report_saver.save_analyst_report(report)
+                self.progress.emit_agent_completed("analyst", type_id, report.token_usage.total_tokens, True)
                 logger.info(
                     f"  Analyst {type_id}: {report.token_usage.total_tokens:,} tokens"
                 )
+            else:
+                self.progress.emit_agent_failed("analyst", type_id, report.error or "Unknown error")
 
-        # Phase 2 & 3: Run source update AND RD reviews in parallel
-        # Source update doesn't affect RD reviews (they review analyst reports, not sources)
-        logger.info("Phase 2+3: Updating sources AND running RD reviews in parallel...")
+        # Emit cost update after analyst phase
+        self._emit_cost_update()
 
-        # Build RD review calls
+        # Phase 2: Source update (extracts citations AND analyst_summaries)
+        # Must complete before RD reviews so summaries are available for cross-analyst context
+        logger.info("Phase 2: Updating sources (citations + analyst summaries)...")
+        source_updated = await self._update_sources_from_reports(analyst_reports, iteration)
+        iteration_state.source_updated = source_updated
+
+        # Phase 3: RD reviews with cross-analyst summaries
+        logger.info("Phase 3: Running 6 parallel RD reviews (with cross-analyst context)...")
+
+        # Build RD review calls with analyst summaries injected
         rd_calls = []
         for type_id in range(1, 7):
             if type_id in analyst_reports and analyst_reports[type_id].is_success:
                 # Load previous RD feedback for engagement assessment
                 previous_rd_feedback = self.report_saver.load_rd_review(type_id, iteration - 1)
+                # Get summaries of OTHER analysts for cross-analyst context
+                summaries_md = self._format_analyst_summaries_for_rd(exclude_type_id=type_id)
                 call = AgentCall(
                     role=AgentRole.RD_REVIEW,
                     system_prompt=self._build_rd_review_system_prompt(),
                     user_prompt=self._build_rd_review_user_prompt(
                         type_id, iteration, analyst_reports[type_id].content,
-                        previous_rd_feedback=previous_rd_feedback
+                        previous_rd_feedback=previous_rd_feedback,
+                        analyst_summaries_md=summaries_md,
                     ),
                     investing_type_id=type_id,
                     iteration=iteration,
                 )
                 rd_calls.append(call)
 
-        # Run both in parallel - source update doesn't block RD reviews
-        source_task = asyncio.create_task(
-            self._update_sources_from_reports(analyst_reports, iteration)
-        )
-        rd_task = asyncio.create_task(
-            self.agent_runner.run_rd_review_batch(rd_calls)
-        )
+        # Emit RD started events
+        for type_id in range(1, 7):
+            self.progress.emit_agent_started("rd_review", type_id, f"RD Review {type_id}")
 
-        # Wait for both to complete
-        source_updated, rd_reviews = await asyncio.gather(source_task, rd_task)
-        iteration_state.source_updated = source_updated
+        rd_reviews = await self.agent_runner.run_rd_review_batch(rd_calls)
         iteration_state.rd_reviews = rd_reviews
 
-        # Save RD reviews
+        # Save RD reviews and emit completion events
         for type_id, review in rd_reviews.items():
             if review.is_success:
                 self.report_saver.save_rd_review(review)
+                self.progress.emit_agent_completed("rd_review", type_id, review.token_usage.total_tokens, True)
                 logger.info(f"  RD Review {type_id}: {review.token_usage.total_tokens:,} tokens")
+            else:
+                self.progress.emit_agent_failed("rd_review", type_id, review.error or "Unknown error")
+
+        # Emit cost update after RD review phase
+        self._emit_cost_update()
+
+        # Generate thesis summary for dashboard
+        await self._generate_thesis_summary(iteration, analyst_reports, rd_reviews)
 
         # Phase 4: Run web research to gather evidence for next iteration
         # Skip on final iteration since there's no next iteration to inform
@@ -824,6 +1045,8 @@ Output using Source Scout format with JSON source additions.
             filepath = self.report_saver.save_final(synthesis_report, lang="EN")
             logger.info(f"Synthesis complete: {synthesis_report.token_usage.total_tokens:,} tokens")
             logger.info(f"Final memo saved: {filepath}")
+            # Emit final cost update
+            self._emit_cost_update()
         else:
             raise RuntimeError(f"Synthesis failed: {synthesis_report.error}")
 
@@ -974,7 +1197,10 @@ Output using Source Scout format with JSON source additions.
         max_retries: int = 2,
     ) -> bool:
         """
-        Run source update with v2 agent and optional model escalation.
+        Run source update with v2 agent using configured provider.
+
+        Uses provider from ROLE_PROVIDER_CONFIG["source_summary"] (default: gpt-4o-mini).
+        GPT-4o-mini has best JSON validity from benchmark testing.
 
         Args:
             update_prompt: Structured prompt for v2 agent
@@ -985,54 +1211,45 @@ Output using Source Scout format with JSON source additions.
         Returns:
             True if update succeeded
         """
-        # Try Haiku first (fast, cheap)
-        models_to_try = [
-            ("claude", "haiku"),
-            ("claude", "sonnet"),  # Escalate if Haiku fails
-        ]
+        for attempt in range(max_retries + 1):
+            # Use configured provider (gpt-4o-mini by default - best JSON validity)
+            call = AgentCall(
+                role=AgentRole.SOURCE_SUMMARY,
+                system_prompt=self.prompt_loader.source_summary_agent_v2,
+                user_prompt=update_prompt,
+                iteration=iteration,
+                identifier=f"source_update_v2_iter{iteration}_attempt{attempt}",
+                # No provider/model override - uses config routing
+            )
 
-        for provider, model in models_to_try:
-            for attempt in range(max_retries + 1):
-                call = AgentCall(
-                    role=AgentRole.SOURCE_SUMMARY,
-                    system_prompt=self.prompt_loader.source_summary_agent_v2,
-                    user_prompt=update_prompt,
-                    iteration=iteration,
-                    identifier=f"source_update_v2_iter{iteration}_{model}_attempt{attempt}",
-                    provider=provider,
-                    model=model,
-                )
+            source_response = await self.agent_runner.run_single(call)
 
-                source_response = await self.agent_runner.run_single(call)
+            if not source_response.is_success:
+                logger.warning(f"Source summary v2 failed: {source_response.error}")
+                if attempt < max_retries:
+                    logger.info(f"Retrying source update (attempt {attempt + 2}/{max_retries + 1})...")
+                continue
 
-                if not source_response.is_success:
-                    logger.warning(f"Source summary v2 ({model}) failed: {source_response.error}")
-                    continue
+            # Try to update from the response
+            update_success = self.source_manager.update_from_report(
+                "",  # No raw report content needed for v2
+                source_response.content
+            )
 
-                # Try to update from the response
-                update_success = self.source_manager.update_from_report(
-                    "",  # No raw report content needed for v2
-                    source_response.content
-                )
+            if not update_success:
+                logger.warning(f"Source update parsing failed (attempt {attempt + 1})")
+                continue
 
-                if not update_success:
-                    logger.warning(f"Source update parsing failed ({model})")
-                    continue
-
-                # Validate thesis extraction quality
-                data = self.source_manager.load_source_file()
-                if self.source_manager.validate_thesis_extraction(data):
-                    logger.info(
-                        f"Source file updated with v2 ({model}), "
-                        f"iteration {iteration}"
-                    )
-                    return True
-                else:
-                    logger.warning(f"Thesis extraction incomplete ({model}), escalating...")
-                    break  # Try next model
-
-            if provider == "claude" and model == "haiku":
-                logger.info("Escalating to Sonnet for better thesis extraction...")
+            # Validate thesis extraction quality
+            data = self.source_manager.load_source_file()
+            if self.source_manager.validate_thesis_extraction(data):
+                logger.info(f"Source file updated with v2, iteration {iteration}")
+                # Emit source update event for dashboard
+                num_sources = sum(len(e.get("sources", [])) for e in extractions)
+                self.progress.emit_source_updated(new_citations=num_sources)
+                return True
+            else:
+                logger.warning(f"Thesis extraction incomplete (attempt {attempt + 1})")
 
         return False
 
@@ -1092,6 +1309,8 @@ Output using Source Scout format with JSON source additions.
 
             if update_success:
                 logger.info(f"Source file updated successfully v1 (iteration {iteration})")
+                # Emit source update event for dashboard
+                self.progress.emit_source_updated(new_citations=len(reports))
                 return True
 
             if attempt < max_retries:
@@ -1237,6 +1456,17 @@ Examples:
         dest="api_key",
         help="Anthropic API key (or set ANTHROPIC_API_KEY env var)",
     )
+    parser.add_argument(
+        "--no-gui",
+        action="store_true",
+        help="Disable the browser-based progress dashboard",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port for the dashboard server (default: 8765)",
+    )
 
     args = parser.parse_args()
 
@@ -1269,8 +1499,30 @@ Examples:
     # Create config
     config = PipelineConfig(model=args.model, verbose=args.verbose)
 
+    # Initialize dashboard if enabled
+    emitter = None
+    dashboard_server = None
+
+    if not args.no_gui:
+        try:
+            from dashboard.emitter import ProgressEmitter
+            from dashboard.server import start_dashboard_server
+
+            emitter = ProgressEmitter()
+            dashboard_server = start_dashboard_server(
+                emitter=emitter,
+                port=args.port,
+                open_browser=True,
+            )
+            logger.info(f"Dashboard started at http://127.0.0.1:{args.port}")
+        except ImportError as e:
+            logger.warning(f"Dashboard not available: {e}")
+            logger.info("Run with --no-gui to suppress this warning")
+        except Exception as e:
+            logger.warning(f"Failed to start dashboard: {e}")
+
     # Run pipeline
-    pipeline = TickerToThesisPipeline(ticker, thinking, config)
+    pipeline = TickerToThesisPipeline(ticker, thinking, config, emitter=emitter)
 
     try:
         result = asyncio.run(pipeline.run())
@@ -1282,6 +1534,10 @@ Examples:
     except Exception as e:
         print(f"\nError: {e}")
         sys.exit(1)
+    finally:
+        # Cleanup dashboard
+        if dashboard_server:
+            dashboard_server.stop()
 
 
 if __name__ == "__main__":

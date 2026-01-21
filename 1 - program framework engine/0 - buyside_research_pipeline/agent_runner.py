@@ -591,7 +591,8 @@ class MultiProviderRunner:
                 providers_tried.add(current_provider)
 
                 # Check if provider is currently rate-limited
-                if not self._health_tracker._health[current_provider].is_available():
+                provider_health = self._health_tracker._health.get(current_provider)
+                if provider_health and not provider_health.is_available():
                     logger.debug(f"Skipping {current_provider} (cooldown active)")
                     fallback = self._health_tracker.get_fallback(current_provider, current_model)
                     if fallback and fallback[0] not in providers_tried:

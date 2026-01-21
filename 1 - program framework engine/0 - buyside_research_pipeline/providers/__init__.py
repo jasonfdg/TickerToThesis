@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .base import BaseProvider, ProviderConfig, ProviderResponse
 from .claude import ClaudeProvider
+from .claude_cli import ClaudeCliProvider
 from .openai_provider import OpenAIProvider
 from .gemini import GeminiProvider
 from .perplexity import PerplexityProvider
@@ -39,6 +40,7 @@ __all__ = [
     "ProviderResponse",
     "BaseProvider",
     "ClaudeProvider",
+    "ClaudeCliProvider",
     "OpenAIProvider",
     "GeminiProvider",
     "PerplexityProvider",
@@ -50,6 +52,7 @@ __all__ = [
 class ProviderType(Enum):
     """Available provider types."""
     CLAUDE = "claude"
+    CLAUDE_CLI = "claude-cli"  # CLI-based execution (Max subscription)
     OPENAI = "openai"
     GEMINI = "gemini"
     PERPLEXITY = "perplexity"
@@ -72,9 +75,9 @@ ANALYST_PROVIDERS: Dict[int, Tuple[str, str]] = {
 # Role -> (provider, model) mapping for non-analyst roles
 # NOTE: These should match ROLE_PROVIDER_CONFIG in config.py
 ROLE_PROVIDERS: Dict[AgentRole, Tuple[str, str]] = {
-    AgentRole.RD_REVIEW: ("claude", "sonnet"),           # Consistent critique
+    AgentRole.RD_REVIEW: ("claude", "sonnet"),           # Default for non-typed RD calls (see RD_REVIEW_PROVIDER_CONFIG)
     AgentRole.RD_SYNTHESIS: ("gemini", "gemini-2.5-pro"),  # Gemini for synthesis (1-step, no polish)
-    AgentRole.SOURCE_SUMMARY: ("claude", "haiku"),       # Fast, cheap
+    AgentRole.SOURCE_SUMMARY: ("openai", "gpt-4o-mini"),   # Best JSON validity from benchmark
     AgentRole.HUMAN_READABLE: ("claude", "sonnet"),      # (Deprecated - synthesis includes polish)
     AgentRole.SOURCE_SCOUT: ("perplexity", "sonar"),     # Real web search
 }
@@ -131,6 +134,8 @@ class ProviderFactory:
 
             if provider_type == "claude":
                 self._providers[provider_type] = ClaudeProvider(config)
+            elif provider_type == "claude-cli":
+                self._providers[provider_type] = ClaudeCliProvider(config)
             elif provider_type == "openai":
                 self._providers[provider_type] = OpenAIProvider(config)
             elif provider_type == "gemini":

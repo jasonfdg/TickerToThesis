@@ -21,11 +21,17 @@ from typing import Dict, List, Optional, Tuple
 import anthropic
 
 try:
-    from .config import PipelineConfig, ANALYST_PROVIDER_CONFIG, ROLE_PROVIDER_CONFIG
+    from .config import (
+        PipelineConfig, ANALYST_PROVIDER_CONFIG, ROLE_PROVIDER_CONFIG,
+        COMPONENT_OVERRIDES, get_effective_provider
+    )
     from .models import AgentReport, AgentRole, TokenUsage
     from .providers import ProviderFactory, ProviderResponse
 except ImportError:
-    from config import PipelineConfig, ANALYST_PROVIDER_CONFIG, ROLE_PROVIDER_CONFIG
+    from config import (
+        PipelineConfig, ANALYST_PROVIDER_CONFIG, ROLE_PROVIDER_CONFIG,
+        COMPONENT_OVERRIDES, get_effective_provider
+    )
     from models import AgentReport, AgentRole, TokenUsage
     from providers import ProviderFactory, ProviderResponse
 
@@ -58,15 +64,33 @@ class AgentCall:
             self._assign_provider_model()
 
     def _assign_provider_model(self):
-        """Auto-assign provider and model based on role configuration."""
+        """Auto-assign provider and model based on role configuration.
+
+        Priority order:
+        1. Explicit provider/model set on AgentCall
+        2. COMPONENT_OVERRIDES in config.py
+        3. PROVIDER_MODE substitution (api->cli for Claude)
+        4. Default routing from ANALYST_PROVIDER_CONFIG / ROLE_PROVIDER_CONFIG
+        """
+        # Build component identifier for override lookup
         if self.role == AgentRole.ANALYST and self.investing_type_id is not None:
-            config = ANALYST_PROVIDER_CONFIG.get(self.investing_type_id, {})
-            self.provider = self.provider or config.get("provider", "claude")
-            self.model = self.model or config.get("model", "sonnet")
+            component = f"analyst_{self.investing_type_id}"
+        elif self.role == AgentRole.RD_REVIEW and self.investing_type_id is not None:
+            component = f"rd_review_{self.investing_type_id}"
         else:
-            config = ROLE_PROVIDER_CONFIG.get(self.role.value, {})
-            self.provider = self.provider or config.get("provider", "claude")
-            self.model = self.model or config.get("model", "sonnet")
+            component = self.role.value  # e.g., "rd_synthesis", "source_scout"
+
+        # Check for override (respects COMPONENT_OVERRIDES and PROVIDER_MODE)
+        if component in COMPONENT_OVERRIDES:
+            override = COMPONENT_OVERRIDES[component]
+            self.provider = self.provider or override["provider"]
+            self.model = self.model or override["model"]
+            return
+
+        # Use get_effective_provider which handles mode substitution
+        effective_provider, effective_model = get_effective_provider(component, self.iteration)
+        self.provider = self.provider or effective_provider
+        self.model = self.model or effective_model
 
 
 class AgentRunner:

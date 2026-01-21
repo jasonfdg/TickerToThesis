@@ -5,8 +5,9 @@ Paths, constants, and settings for the TickerToThesis pipeline.
 """
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 # Base paths
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -158,6 +159,95 @@ ROLE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
     "human_readable": {"provider": "claude", "model": "sonnet"},  # Preserve depth
     "source_scout": {"provider": "perplexity", "model": "sonar"}, # Real web search
 }
+
+
+# =============================================================================
+# Provider Mode Configuration
+# =============================================================================
+# "api" = use API calls (default, costs per token)
+# "cli" = use Claude Code CLI (requires Max subscription, unlimited usage)
+#
+# Set via environment variable: export PROVIDER_MODE=cli
+# Or modify directly here for persistent change
+PROVIDER_MODE: str = os.getenv("PROVIDER_MODE", "api")
+
+
+# Component-level provider overrides
+# Allows swapping any component to a different provider/model
+# Format: {"component_name": {"provider": "...", "model": "..."}}
+#
+# Component naming convention:
+#   - analyst_1, analyst_2, ..., analyst_6 (by investing type)
+#   - rd_review_1, rd_review_2, ..., rd_review_6 (by investing type)
+#   - rd_synthesis, source_summary, source_scout, etc. (by role)
+#
+# Examples:
+#   COMPONENT_OVERRIDES = {
+#       "analyst_1": {"provider": "claude-cli", "model": "sonnet"},
+#       "rd_synthesis": {"provider": "claude-cli", "model": "opus"},
+#   }
+COMPONENT_OVERRIDES: Dict[str, Dict[str, str]] = {
+    # Uncomment to override specific components:
+    # "analyst_1": {"provider": "claude-cli", "model": "sonnet"},
+    # "analyst_2": {"provider": "claude-cli", "model": "sonnet"},
+    # "rd_synthesis": {"provider": "claude-cli", "model": "opus"},
+}
+
+
+def get_effective_provider(component: str, iteration: int = 1) -> Tuple[str, str]:
+    """Get provider/model for a component, respecting overrides and mode.
+
+    Priority order:
+    1. Explicit COMPONENT_OVERRIDES entry
+    2. PROVIDER_MODE substitution (api->cli for Claude providers)
+    3. Default routing from ANALYST_PROVIDER_CONFIG / ROLE_PROVIDER_CONFIG
+
+    Args:
+        component: Component identifier (e.g., "analyst_1", "rd_synthesis")
+        iteration: Pipeline iteration (affects analyst routing in iteration 1)
+
+    Returns:
+        Tuple of (provider_type, model)
+    """
+    mode = os.getenv("PROVIDER_MODE", PROVIDER_MODE)
+
+    # 1. Check for explicit override
+    if component in COMPONENT_OVERRIDES:
+        override = COMPONENT_OVERRIDES[component]
+        return override["provider"], override["model"]
+
+    # 2. Determine default provider based on component type
+    default_provider = None
+    default_model = None
+
+    # Parse component to determine type
+    if component.startswith("analyst_"):
+        type_id = int(component.split("_")[1])
+        # Iteration 1 uses GPT-4o-mini for all analysts
+        if iteration == 1:
+            default_provider = "openai"
+            default_model = "gpt-4o-mini"
+        else:
+            config = ANALYST_PROVIDER_CONFIG.get(type_id, {})
+            default_provider = config.get("provider", "claude")
+            default_model = config.get("model", "sonnet")
+    elif component.startswith("rd_review_"):
+        type_id = int(component.split("_")[2])
+        config = RD_REVIEW_PROVIDER_CONFIG.get(type_id, {})
+        default_provider = config.get("provider", "claude")
+        default_model = config.get("model", "sonnet")
+    else:
+        # Role-based component (rd_synthesis, source_summary, etc.)
+        config = ROLE_PROVIDER_CONFIG.get(component, {})
+        default_provider = config.get("provider", "claude")
+        default_model = config.get("model", "sonnet")
+
+    # 3. Apply mode-based substitution
+    # If mode is "cli" and default provider is "claude", use "claude-cli" instead
+    if mode == "cli" and default_provider == "claude":
+        return "claude-cli", default_model
+
+    return default_provider, default_model
 
 
 def _get_next_version(ticker: str) -> int:

@@ -56,16 +56,16 @@ class ProviderType(Enum):
 
 
 # Analyst type -> (provider, model) mapping
-# Types 1-2: Claude Sonnet (nuanced, creative)
-# Types 3-4: GPT-4o (quantitative, contrarian)
-# Types 5-6: Gemini 2.5 Pro (large context, catalyst analysis)
+# Types 1-3: Claude Sonnet (nuanced, creative)
+# Types 4-6: GPT-4o (quantitative, contrarian)
+# Gemini excluded from analyst roles (used for synthesis only)
 ANALYST_PROVIDERS: Dict[int, Tuple[str, str]] = {
     1: ("claude", "sonnet"),           # Quality Compounders - nuanced reasoning
     2: ("claude", "sonnet"),           # Imaginative Growth - creative thesis
-    3: ("openai", "gpt-4o"),           # Fundamental L/S - quantitative
+    3: ("claude", "sonnet"),           # Fundamental L/S - nuanced analysis
     4: ("openai", "gpt-4o"),           # Deep Value - contrarian
-    5: ("gemini", "gemini-2.5-pro"),   # Event-Driven - timeline/catalyst
-    6: ("gemini", "gemini-2.5-pro"),   # Macro-Tactical - broad context
+    5: ("openai", "gpt-4o"),           # Event-Driven - catalyst analysis
+    6: ("openai", "gpt-4o"),           # Macro-Tactical - quantitative
 }
 
 

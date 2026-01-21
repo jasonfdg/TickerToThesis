@@ -126,13 +126,14 @@ class PipelineConfig:
 
 # Multi-provider model configuration
 # Analyst type -> (provider, model) mapping
+# 3 Claude + 3 OpenAI (Gemini excluded from analyst roles)
 ANALYST_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
     1: {"provider": "claude", "model": "sonnet"},      # Quality Compounders
     2: {"provider": "claude", "model": "sonnet"},      # Imaginative Growth
-    3: {"provider": "openai", "model": "gpt-4o"},      # Fundamental L/S
+    3: {"provider": "claude", "model": "sonnet"},      # Fundamental L/S
     4: {"provider": "openai", "model": "gpt-4o"},      # Deep Value
-    5: {"provider": "gemini", "model": "gemini-2.5-pro"},  # Event-Driven
-    6: {"provider": "gemini", "model": "gemini-2.5-pro"},  # Macro-Tactical
+    5: {"provider": "openai", "model": "gpt-4o"},      # Event-Driven
+    6: {"provider": "openai", "model": "gpt-4o"},      # Macro-Tactical
 }
 
 # Role -> (provider, model) mapping for non-analyst calls
@@ -172,6 +173,34 @@ def _get_current_date() -> str:
 _output_dir_cache: Dict[str, Path] = {}
 
 
+def _find_todays_folder(ticker: str) -> Path | None:
+    """Find an existing folder for this ticker with today's date.
+
+    This ensures consistency even if the cache is not shared across imports.
+    """
+    import re
+    date_str = _get_current_date()
+    pattern = re.compile(rf"^{ticker}_V(\d+)_{date_str}$")
+
+    if not REPORT_OUTPUT.exists():
+        return None
+
+    # Find highest version folder for today
+    best_folder = None
+    best_version = 0
+
+    for folder in REPORT_OUTPUT.iterdir():
+        if folder.is_dir():
+            match = pattern.match(folder.name)
+            if match:
+                version = int(match.group(1))
+                if version > best_version:
+                    best_version = version
+                    best_folder = folder
+
+    return best_folder
+
+
 def get_output_dir(ticker: str, create_new: bool = False) -> Path:
     """Get the output directory for a specific ticker.
 
@@ -180,7 +209,7 @@ def get_output_dir(ticker: str, create_new: bool = False) -> Path:
     Args:
         ticker: Stock ticker symbol
         create_new: If True, always create a new versioned directory.
-                   If False, return the most recent existing directory or create new.
+                   If False, return existing directory for today or create new.
     """
     ticker = ticker.upper()
 
@@ -188,15 +217,20 @@ def get_output_dir(ticker: str, create_new: bool = False) -> Path:
     if ticker in _output_dir_cache and not create_new:
         return _output_dir_cache[ticker]
 
-    if create_new or ticker not in _output_dir_cache:
-        version = _get_next_version(ticker)
-        date_str = _get_current_date()
-        dir_name = f"{ticker}_V{version}_{date_str}"
-        output_dir = REPORT_OUTPUT / dir_name
-        output_dir.mkdir(parents=True, exist_ok=True)
-        _output_dir_cache[ticker] = output_dir
-    else:
-        output_dir = _output_dir_cache[ticker]
+    # Check for existing folder with today's date (handles cache inconsistency across imports)
+    if not create_new:
+        existing_folder = _find_todays_folder(ticker)
+        if existing_folder:
+            _output_dir_cache[ticker] = existing_folder
+            return existing_folder
+
+    # Create new versioned folder
+    version = _get_next_version(ticker)
+    date_str = _get_current_date()
+    dir_name = f"{ticker}_V{version}_{date_str}"
+    output_dir = REPORT_OUTPUT / dir_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _output_dir_cache[ticker] = output_dir
 
     return output_dir
 

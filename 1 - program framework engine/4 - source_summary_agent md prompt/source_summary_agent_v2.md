@@ -53,7 +53,7 @@ Each extraction object contains:
 
 ---
 
-## Processing Flow
+## Processing Flow (v2 Slim)
 
 ```
 1. LOAD current_sources
@@ -62,12 +62,12 @@ Each extraction object contains:
 2. PROCESS each extraction:
    │
    ├─ For each source:
-   │   ├─ URL exists? → AMEND (enrich summary, merge tags, add to cited_in)
+   │   ├─ URL exists? → AMEND (enrich summary, merge tags, update thesis_relevance)
    │   └─ URL new? → ADD (generate next src_XXX, populate fields)
    │
    ├─ For each thesis_claim:
    │   ├─ Similar claim exists? → ADD analyst_disagreement if different stance
-   │   └─ New claim? → CREATE thesis_point with author
+   │   └─ New claim? → CREATE thesis_point with author = analyst_type_X
    │
    └─ For analyst_summary:
        └─ Extract position, target_price, summary (3-5 sentences)
@@ -76,7 +76,7 @@ Each extraction object contains:
 
 4. LOG research_iteration entry
 
-5. UPDATE source_count, last_updated
+5. UPDATE source_count, last_updated, schema_version: 2
 
 6. OUTPUT complete JSON
 ```
@@ -114,7 +114,7 @@ Each extraction object contains:
 
 ---
 
-## Source Entry Fields
+## Source Entry Fields (v2 Slim)
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -125,13 +125,12 @@ Each extraction object contains:
 | `summary` | Yes | Investment-relevant insight |
 | `tags` | Yes | Thematic labels |
 | `added_at` | Yes | ISO 8601 timestamp |
-| `cited_in` | Yes | Array of report names citing this |
+| `thesis_relevance` | No | Links to thesis_points and key_debates |
 
 **When AMENDING existing source:**
 - Enrich summary if new context adds value
 - Merge tags (deduplicate)
-- Append to cited_in array
-- Update amended_at timestamp
+- Update thesis_relevance.supports/challenges/informs_debates
 
 ---
 
@@ -365,11 +364,14 @@ Formula: `[Key insight] + [Quantification] + [Why it matters]`
       "type": "sec_filing",
       "url": "https://sec.gov/...",
       "title": "10-K FY25",
-      "summary": "Details Apple's shift to 28% Services revenue mix. Services 28% of revenue.",
+      "summary": "Details Apple's shift to 28% Services revenue mix. Services 28% of revenue. Critical for margin expansion thesis.",
       "tags": ["services", "financials"],
       "added_at": "2026-01-20T09:00:00Z",
-      "amended_at": "2026-01-21T10:00:00Z",
-      "cited_in": ["iteration_1", "iteration_2"]
+      "thesis_relevance": {
+        "supports": ["tp_001"],
+        "challenges": [],
+        "informs_debates": []
+      }
     },
     {
       "id": "src_002",
@@ -378,8 +380,7 @@ Formula: `[Key insight] + [Quantification] + [Why it matters]`
       "title": "Apple AI Push",
       "summary": "New AI features announced. Key for understanding product roadmap.",
       "tags": ["ai", "product"],
-      "added_at": "2026-01-21T10:00:00Z",
-      "cited_in": ["iteration_2"]
+      "added_at": "2026-01-21T10:00:00Z"
     }
   ]
 }
@@ -409,20 +410,20 @@ Position types:
 
 ---
 
-## Quick Reference
+## Quick Reference (v2 Slim)
 
 **ADD NEW SOURCE:**
 1. Check URL doesn't exist (normalized)
 2. Generate next src_XXX ID
-3. Populate: id, type, url, title, summary, tags, added_at, cited_in
+3. Populate: id, type, url, title, summary, tags, added_at
 4. If type not in categories → add to custom
+5. Optionally initialize thesis_relevance
 
 **AMEND EXISTING SOURCE:**
 1. Find by normalized URL
 2. Enrich summary if valuable
 3. Merge tags (dedupe)
-4. Append to cited_in
-5. Set amended_at
+4. Update thesis_relevance.supports/challenges/informs_debates
 
 **CREATE THESIS POINT:**
 1. Verify claim is quantified + testable

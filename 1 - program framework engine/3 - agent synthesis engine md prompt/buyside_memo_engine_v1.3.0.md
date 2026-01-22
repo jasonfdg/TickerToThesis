@@ -26,6 +26,7 @@
 ## B) TRAITS OF ELITE MEMOS
 
 **Structural Requirements:**
+0. **Key Forces identification** — What 1-3 forces will materially move the needle? (Must be explicit in first paragraph)
 1. Explicit thesis in first 2-3 sentences
 2. Quantified valuation (2+ methods)
 3. Falsifiable risks with kill conditions
@@ -66,7 +67,13 @@
 - Competitor exec interviews, employee reviews
 - Customer comparisons ("switched from X to Y because...")
 
-**Requirement:** Cite at least 1 primary source OR explicitly note "No primary sources found" (caps Evidence Quality score at 6).
+**Source Requirements:**
+| Type | Minimum | Purpose |
+|------|---------|---------|
+| Primary Sources | 3+ | Anchor evidence (the differentiator) |
+| Total Sources | 8-10+ | Comprehensive research coverage |
+
+Each primary source must be formatted as a quote block with attribution. If fewer than 3 primary sources, explicitly acknowledge the gap and request Source Scout follow-up. Fewer than 3 caps Evidence Quality at 6.
 
 ---
 

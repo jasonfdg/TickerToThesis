@@ -29,7 +29,7 @@ Do not output deltas or partial updates. The full JSON ensures:
 
 ---
 
-## Execution Flow
+## Execution Flow (v2 Slim)
 
 ```
 START
@@ -37,36 +37,30 @@ START
   ├─► Load source_file (if exists)
   │   └─► Index existing sources by normalized URL
   │   └─► Load existing research_context (if present)
-  │   └─► Load existing analysts registry (if present)
   │
   ├─► Process research_reports (if provided)
   │   ├─► Extract all citations, links, references
-  │   ├─► Identify: source type, date, context, why cited
+  │   ├─► Identify: source type, date, context
   │   └─► Queue for reconciliation
   │
   ├─► Process analyst_reports (if provided)
-  │   ├─► Parse filename → extract analyst initials
-  │   ├─► Resolve analyst:
-  │   │   ├─► Match initials to existing analyst → use analyst_id
-  │   │   └─► New initials → register analyst (prompt for name, focus_areas)
+  │   ├─► Identify analyst_type (1-6) from report context
   │   ├─► Extract cited sources → queue for reconciliation
   │   ├─► Extract thesis points → add to research_context.thesis_points
-  │   │   ├─► Set author = analyst_id
+  │   │   ├─► Set author = analyst_type_X
   │   │   └─► Link to supporting/challenging sources
   │   ├─► Check for disagreements with existing thesis_points
   │   │   └─► Add to analyst_disagreements where applicable
   │   ├─► Extract key debates → add to research_context.key_debates
-  │   ├─► Extract source interpretations → populate thesis_relevance.interpretations
-  │   ├─► Log iteration in research_iterations (include analyst)
-  │   └─► Create report_summary entry
+  │   ├─► Log iteration in research_iterations
+  │   └─► Update analyst_summaries
   │
   ├─► Process director_feedback (if provided)
   │   ├─► Extract new sources cited → queue for reconciliation
   │   ├─► Match feedback to existing thesis points → update director_notes
   │   ├─► Extract action items → log in research_iterations
   │   ├─► Update key_debates status if director provided guidance
-  │   ├─► Log iteration in research_iterations
-  │   └─► Create report_summary entry (type: director_feedback)
+  │   └─► Log iteration in research_iterations
   │
   ├─► Process raw_files (if provided)
   │   ├─► Determine source type from URL/content
@@ -78,14 +72,11 @@ START
   │   │   ├─► YES: AMEND existing entry
   │   │   │   ├─► Enrich summary if new context available
   │   │   │   ├─► Merge tags (deduplicate)
-  │   │   │   ├─► Add to cited_in array
-  │   │   │   ├─► Append to reason field
-  │   │   │   ├─► Add new interpretation to thesis_relevance.interpretations
-  │   │   │   └─► Update amended_at timestamp
+  │   │   │   └─► Update thesis_relevance.supports/challenges/informs_debates
   │   │   │
   │   │   └─► NO: ADD new entry
-  │   │       ├─► Generate next sequential ID
-  │   │       ├─► Populate all fields
+  │   │       ├─► Generate next sequential ID (src_XXX)
+  │   │       ├─► Populate: id, type, url, title, summary, tags, added_at
   │   │       ├─► Initialize thesis_relevance (empty if no context)
   │   │       └─► Set added_at timestamp
   │   │
@@ -93,10 +84,11 @@ START
   │
   ├─► Reconcile thesis_relevance bidirectional links
   │   ├─► For each thesis_point: verify supporting_sources exist
-  │   ├─► For each thesis_point: verify author exists in analysts array
+  │   ├─► For each thesis_point: verify author format is analyst_type_X
   │   ├─► For each source: verify thesis_relevance references valid thesis_points
-  │   ├─► For each interpretation: verify analyst exists
   │   └─► Flag orphaned references in output warnings
+  │
+  ├─► Set schema_version: 2
   │
   ├─► Validate output schema
   │
@@ -106,34 +98,22 @@ END
 
 ---
 
-## Output Schema
+## Output Schema (v2 Slim)
+
+> **Schema v2**: Removes redundant fields for ~40% size reduction. Fields removed:
+> - `analysts` array → analysts identified by `analyst_type_X` in thesis_points
+> - `report_summaries` → duplicated by research_iterations
+> - `interpretations` in thesis_relevance → derivable from thesis_points
+> - `cited_in` on sources → reconstructible from research_iterations
+> - `amended_at` on sources → sparse data, rarely used
+> - `reason` on sources → verbose, replaced by summary enrichment
 
 ```json
 {
   "ticker": "AAPL",
   "last_updated": "2026-01-19T14:32:00Z",
   "source_count": 47,
-
-  "config": {
-    "max_analysts": 10
-  },
-
-  "analysts": [
-    {
-      "id": "analyst_001",
-      "name": "Jane Chen",
-      "initials": "JC",
-      "focus_areas": ["services", "hardware"],
-      "reports_submitted": ["analyst_report_jc_v1.md", "analyst_report_jc_v2.md"]
-    },
-    {
-      "id": "analyst_002",
-      "name": "Marcus Williams",
-      "initials": "MW",
-      "focus_areas": ["china", "supply_chain"],
-      "reports_submitted": ["analyst_report_mw_v1.md"]
-    }
-  ],
+  "schema_version": 2,
 
   "categories": {
     "core": [
@@ -159,15 +139,15 @@ END
         "id": "tp_001",
         "stance": "bull",
         "claim": "Services margin expansion will drive 200bps+ gross margin improvement by FY27",
-        "author": "analyst_001",
+        "author": "analyst_type_1",
         "supporting_sources": ["src_001", "src_012", "src_023"],
         "challenging_sources": [],
         "confidence": "high",
-        "added_from": "analyst_report_jc_v2.md",
+        "added_from": "iteration_2",
         "director_notes": "Validated; requested sensitivity analysis on App Store regulatory risk",
         "analyst_disagreements": [
           {
-            "analyst": "analyst_002",
+            "analyst": "analyst_type_2",
             "position": "skeptical",
             "note": "China regulatory risk underweighted in margin projections"
           }
@@ -186,64 +166,38 @@ END
     ],
     "research_iterations": [
       {
-        "report": "analyst_report_jc_v1.md",
+        "report": "iteration_1_combined",
         "date": "2026-01-10",
-        "type": "analyst_report",
-        "analyst": "analyst_001",
-        "focus": "Initial Services-led bull thesis development",
+        "type": "analyst_reports",
+        "focus": "Initial thesis development across 6 analyst types",
         "sources_added": 15,
         "thesis_points_added": ["tp_001", "tp_002"],
         "action_items": []
       },
       {
-        "report": "director_feedback_v1.md",
+        "report": "iteration_2_combined",
         "date": "2026-01-12",
-        "type": "director_feedback",
-        "focus": "Challenged Services TAM assumptions",
-        "sources_added": 0,
-        "thesis_points_added": [],
-        "action_items": ["Find channel checks on App Store", "Model regulatory scenarios"]
-      },
-      {
-        "report": "analyst_report_mw_v1.md",
-        "date": "2026-01-15",
-        "type": "analyst_report",
-        "analyst": "analyst_002",
-        "focus": "China risk deep-dive",
+        "type": "analyst_reports",
+        "focus": "Thesis refinement post-RD feedback",
         "sources_added": 8,
         "thesis_points_added": ["tp_005", "tp_006"],
-        "action_items": []
+        "action_items": ["Find channel checks on App Store", "Model regulatory scenarios"]
       }
-    ]
-  },
-
-  "report_summaries": [
-    {
-      "report": "analyst_report_jc_v1.md",
-      "analyst": "analyst_001",
-      "date": "2026-01-10",
-      "summary": "Initial Services-led bull thesis. Key claims: margin expansion to 200bps+, Services mix shift driving gross margin improvement. 15 sources cited.",
-      "thesis_points_introduced": ["tp_001", "tp_002", "tp_003"],
-      "key_debates_raised": ["kd_001"]
-    },
-    {
-      "report": "director_feedback_v1.md",
-      "type": "director_feedback",
-      "date": "2026-01-12",
-      "summary": "Challenged Services TAM assumptions. Requested App Store regulatory sensitivity analysis. Validated margin expansion mechanism.",
-      "thesis_points_validated": ["tp_001"],
-      "thesis_points_challenged": ["tp_002"],
-      "action_items_assigned": ["Find channel checks on App Store", "Model regulatory scenarios"]
-    },
-    {
-      "report": "analyst_report_mw_v1.md",
-      "analyst": "analyst_002",
-      "date": "2026-01-15",
-      "summary": "China risk deep-dive. Identified structural headwinds from Huawei comeback and regulatory environment. 8 sources cited.",
-      "thesis_points_introduced": ["tp_005", "tp_006"],
-      "key_debates_raised": ["kd_002"]
+    ],
+    "analyst_summaries": {
+      "iteration": 2,
+      "last_updated": "2026-01-12T10:00:00Z",
+      "summaries": [
+        {
+          "type_id": 1,
+          "type_name": "Quality Compounder",
+          "position": "LONG",
+          "target_price": "$250",
+          "summary": "Bull thesis on Services margin expansion. 28% mix shift drives durability."
+        }
+      ]
     }
-  ],
+  },
 
   "sources": [
     {
@@ -254,25 +208,12 @@ END
       "title": "Apple Inc. FY2025 Annual Report",
       "source_date": "2025-10-30",
       "added_at": "2026-01-15T09:00:00Z",
-      "amended_at": "2026-01-19T14:32:00Z",
-      "reason": "Added from Morgan Stanley initiation; amended with Services segment context",
       "summary": "Details Apple's shift to 28% Services revenue mix and $100B+ annual services run-rate. Critical for margin expansion thesis and recurring revenue durability.",
       "tags": ["financials", "services", "margins"],
-      "cited_in": ["ms_initiation_2026.pdf", "internal_memo_q1.md"],
       "thesis_relevance": {
         "supports": ["tp_001", "tp_003"],
         "challenges": ["tp_005"],
-        "informs_debates": ["kd_001"],
-        "interpretations": [
-          {
-            "analyst": "analyst_001",
-            "view": "10-K confirms $100B+ Services run-rate, validates Services bull case for margin expansion"
-          },
-          {
-            "analyst": "analyst_002",
-            "view": "Geographic mix shift in 10-K suggests China headwinds underappreciated; margin pressure likely in 2H"
-          }
-        ]
+        "informs_debates": ["kd_001"]
       }
     }
   ]
@@ -290,11 +231,9 @@ END
 | `ticker` | string | Uppercase ticker symbol |
 | `last_updated` | ISO 8601 datetime | Last modification time |
 | `source_count` | integer | Total sources |
-| `config` | object | Configuration settings (see Config Object) |
-| `analysts` | array | Registered analysts (see Analysts Registry) |
+| `schema_version` | integer | Schema version (2 for slim schema) |
 | `categories` | object | Type taxonomy (core + custom) |
-| `research_context` | object | Thesis points, key debates, research iterations (populated when analyst_reports or director_feedback provided) |
-| `report_summaries` | array | Summaries of submitted reports |
+| `research_context` | object | Thesis points, key debates, research iterations, analyst_summaries |
 | `sources` | array | All source entries |
 
 ### Categories Object
@@ -328,49 +267,7 @@ END
 - `social` → twitter_thread, reddit_dd, linkedin_post
 - `government` → contract_award, regulatory_approval, congressional_testimony
 
-### Config Object
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `max_analysts` | integer | 10 | Maximum registered analysts (1-10) |
-
-```json
-{
-  "config": {
-    "max_analysts": 10
-  }
-}
-```
-
-### Analysts Registry
-
-Tracks registered analysts. Auto-populated when new initials are detected in report filenames.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `id` | string | Yes | Unique identifier: `analyst_XXX` (sequential) |
-| `name` | string | Yes | Full name |
-| `initials` | string | Yes | 2-3 character initials (uppercase) for filename matching |
-| `focus_areas` | array | Yes | Areas of expertise (e.g., `["services", "hardware"]`) |
-| `reports_submitted` | array | Yes | Filenames of submitted reports |
-
-```json
-{
-  "analysts": [
-    {
-      "id": "analyst_001",
-      "name": "Jane Chen",
-      "initials": "JC",
-      "focus_areas": ["services", "hardware"],
-      "reports_submitted": ["analyst_report_jc_v1.md", "analyst_report_jc_v2.md"]
-    }
-  ]
-}
-```
-
-**Auto-registration**: When unrecognized initials appear (e.g., `analyst_report_xy_v1.md`), prompt for full name and focus areas. Subsequent reports with matching initials auto-link.
-
-### Source Entry
+### Source Entry (v2 Slim)
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -379,56 +276,33 @@ Tracks registered analysts. Auto-populated when new initials are detected in rep
 | `subtype` | string | No | Specific document variant |
 | `url` | string | Yes | Canonical source link (primary dedupe key) |
 | `title` | string | Yes | Human-readable title |
-| `source_date` | date | Yes | Original publication date (YYYY-MM-DD) |
+| `source_date` | date | No | Original publication date (YYYY-MM-DD) |
 | `added_at` | datetime | Yes | When first added (ISO 8601) |
-| `amended_at` | datetime | No | Last amendment timestamp |
-| `reason` | string | Yes | Why added/amended—audit trail |
 | `summary` | string | Yes | 1-2 sentences of investment-relevant context |
 | `tags` | array | Yes | Thematic labels |
-| `cited_in` | array | Yes | Reports that referenced this source |
 | `thesis_relevance` | object | No | Relationship to thesis points and debates |
 
-### Thesis Relevance Object
+### Thesis Relevance Object (v2 Slim)
 
-Links sources to research context. Present when `analyst_reports` or `director_feedback` processed.
+Links sources to research context. Simplified in v2—interpretations are now derivable from thesis_points where each point has an `author` field.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `supports` | array | Thesis point IDs this source supports |
 | `challenges` | array | Thesis point IDs this source challenges |
 | `informs_debates` | array | Key debate IDs this source informs |
-| `interpretations` | array | Per-analyst interpretations (see below) |
-
-**The interpretations field is critical**: Raw sources don't speak for themselves. This captures each analyst's read—enabling multiple perspectives on the same source.
-
-#### Interpretations Array
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `analyst` | string | Yes | Analyst ID |
-| `view` | string | Yes | What the source means for the thesis |
 
 ```json
 {
   "thesis_relevance": {
     "supports": ["tp_001"],
     "challenges": ["tp_005"],
-    "informs_debates": ["kd_001"],
-    "interpretations": [
-      {
-        "analyst": "analyst_001",
-        "view": "10-K confirms $100B+ Services run-rate, validates bull case"
-      },
-      {
-        "analyst": "analyst_002",
-        "view": "Geographic mix shift suggests China headwinds underappreciated"
-      }
-    ]
+    "informs_debates": ["kd_001"]
   }
 }
 ```
 
-**Multi-analyst benefit**: The same source can inform opposing conclusions. The array preserves nuance rather than forcing consensus.
+**Multi-analyst views**: Captured in thesis_points with `author` = `analyst_type_X` and `analyst_disagreements` array.
 
 ---
 
@@ -644,7 +518,7 @@ Extract thesis points meeting these criteria:
 
 ---
 
-## Director Feedback Integration
+## Director Feedback Integration (v2 Slim)
 
 ### Processing Flow
 
@@ -654,7 +528,7 @@ DIRECTOR FEEDBACK RECEIVED
   ├─► Parse for thesis point references
   │   ├─► Match to existing thesis_points by claim similarity
   │   ├─► Update director_notes field
-  │   └─► If new thesis point introduced → add it
+  │   └─► If new thesis point introduced → add it with author
   │
   ├─► Parse for key debate references
   │   ├─► Match to existing key_debates
@@ -662,8 +536,7 @@ DIRECTOR FEEDBACK RECEIVED
   │   └─► If resolved → update status, add resolution
   │
   ├─► Extract action items
-  │   ├─► Log in research_iterations
-  │   └─► Flag as outstanding
+  │   └─► Log in research_iterations.action_items
   │
   └─► Log iteration in research_iterations
 ```
@@ -687,70 +560,26 @@ If director contradicts analyst conclusions:
 
 ---
 
-## Report Summaries
-
-High-level view of what each report contributed.
-
-### Fields
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `report` | string | Yes | Filename |
-| `analyst` | string | Conditional | Analyst ID (for analyst_report) |
-| `type` | enum | Conditional | `"director_feedback"` (omit for analyst reports) |
-| `date` | date | Yes | Date (YYYY-MM-DD) |
-| `summary` | string | Yes | 2-3 sentence summary |
-| `thesis_points_introduced` | array | No | New thesis point IDs |
-| `thesis_points_validated` | array | No | Validated thesis point IDs |
-| `thesis_points_challenged` | array | No | Challenged thesis point IDs |
-| `key_debates_raised` | array | No | New key debate IDs |
-| `action_items_assigned` | array | No | Action items assigned |
-
-**Analyst report:**
-```json
-{
-  "report": "analyst_report_jc_v2.md",
-  "analyst": "analyst_001",
-  "date": "2026-01-14",
-  "summary": "Services bull thesis refinement. Added App Store regulatory scenario analysis. Quantified DMA impact at 50-80bps compression.",
-  "thesis_points_introduced": ["tp_004"],
-  "key_debates_raised": []
-}
-```
-
-**Director feedback:**
-```json
-{
-  "report": "director_feedback_v1.md",
-  "type": "director_feedback",
-  "date": "2026-01-12",
-  "summary": "Challenged Services TAM. Requested regulatory sensitivity analysis. Validated margin expansion mechanism.",
-  "thesis_points_validated": ["tp_001"],
-  "thesis_points_challenged": ["tp_002"],
-  "action_items_assigned": ["Find App Store channel checks", "Model regulatory scenarios"]
-}
-```
-
 ---
 
-## Multi-Analyst Disagreement Handling
+## Multi-Analyst Disagreement Handling (v2 Slim)
 
 Disagreements are inevitable and valuable. Capture them as first-class objects rather than forcing consensus.
 
 ### Principles
 
 1. **Preserve dissent**: Disagreements represent intellectual diversity
-2. **Attribute clearly**: Every position traces to a specific analyst
+2. **Attribute clearly**: Every position traces to analyst_type_X
 3. **Capture reasoning**: The *why* matters as much as the position
 4. **Enable synthesis**: Director can weigh perspectives when both visible
 
-### Where Disagreements Surface
+### Where Disagreements Surface (v2)
 
 | Location | Mechanism | Example |
 |----------|-----------|---------|
-| Thesis Points | `analyst_disagreements` array | Analyst B skeptical of A's margin target |
-| Source Interpretations | `interpretations` array | Same 10-K read differently |
-| Key Debates | `bull_sources` / `bear_sources` | Analysts contributing to each side |
+| Thesis Points | `analyst_disagreements` array | analyst_type_2 skeptical of analyst_type_1's margin target |
+| Analyst Summaries | Different positions | analyst_type_1 LONG vs analyst_type_3 SHORT |
+| Key Debates | `bull_sources` / `bear_sources` | Sources from different analyst perspectives |
 
 ### Processing Flow
 
@@ -760,16 +589,13 @@ DISAGREEMENT DETECTED
   ├─► Find thesis_point analyst disagrees with
   │
   ├─► New thesis point articulated?
-  │   ├─► YES: Create tp_XXX with this analyst as author
+  │   ├─► YES: Create tp_XXX with author = analyst_type_X
   │   └─► NO: Add to analyst_disagreements on existing point
   │
-  ├─► Capture details:
-  │   ├─► analyst: dissenting analyst ID
-  │   ├─► position: skeptical | contrary | nuanced
-  │   └─► note: brief explanation
-  │
-  └─► If same source cited differently:
-      └─► Add to source's thesis_relevance.interpretations
+  └─► Capture details:
+      ├─► analyst: analyst_type_X (dissenting analyst type)
+      ├─► position: skeptical | contrary | nuanced
+      └─► note: brief explanation
 ```
 
 ### Position Types
@@ -782,54 +608,31 @@ DISAGREEMENT DETECTED
 
 ---
 
-## Analyst Identification
+## Analyst Identification (v2 Slim)
 
-Analysts identified via filename patterns—automatic attribution without manual tagging.
+In v2 schema, analysts are identified by their investing philosophy type rather than a registry of individuals.
 
-### Filename Convention
-
-```
-analyst_report_[initials]_v[N].md
-```
-
-- `analyst_report_` — Fixed prefix
-- `[initials]` — 2-3 character initials (lowercase)
-- `_v[N]` — Version number (sequential per analyst)
-- `.md` — Markdown format
-
-| Filename | Initials | Interpretation |
-|----------|----------|----------------|
-| `analyst_report_jc_v1.md` | JC | Jane Chen, v1 |
-| `analyst_report_jc_v2.md` | JC | Jane Chen, v2 |
-| `analyst_report_mw_v1.md` | MW | Marcus Williams, v1 |
-| `director_feedback_v1.md` | — | Director (no initials) |
-
-### Auto-Registration Flow
+### Analyst Type Pattern
 
 ```
-NEW REPORT FILENAME PARSED
-  │
-  ├─► Extract initials from pattern
-  │
-  ├─► Search analysts array for match
-  │   │
-  │   ├─► MATCH: Add filename to reports_submitted, use analyst_id
-  │   │
-  │   └─► NO MATCH (new initials):
-  │       ├─► Generate next analyst_XXX id
-  │       ├─► Prompt for: name, focus_areas
-  │       ├─► Create analyst entry
-  │       └─► Add filename to reports_submitted
-  │
-  └─► Continue processing with analyst_id
+analyst_type_X
 ```
 
-### Validation
+Where X is the analyst type ID (1-6):
+- `analyst_type_1` — Quality Compounder
+- `analyst_type_2` — Imaginative Growth
+- `analyst_type_3` — Fundamental L/S
+- `analyst_type_4` — Deep Value
+- `analyst_type_5` — Event-Driven
+- `analyst_type_6` — Macro-Tactical
 
-- Initials: 2-3 alphabetic characters
-- Case-insensitive matching (`JC` = `jc`)
-- Director feedback doesn't require initials
-- If `config.max_analysts` reached, reject new registration
+### Usage
+
+- Thesis points: `"author": "analyst_type_1"`
+- Analyst disagreements: `"analyst": "analyst_type_3"`
+- Analyst summaries: `"type_id": 1, "type_name": "Quality Compounder"`
+
+This simplification removes the need for an analysts registry while maintaining full attribution traceability.
 
 ---
 
@@ -870,47 +673,37 @@ research_iterations.sort_by(date ASC)
   → Track action_items resolution
 ```
 
-### Multi-Analyst Queries
+### Multi-Analyst Queries (v2 Slim)
 
-**"What did analyst X contribute?"**
+**"What did analyst type X contribute?"**
 ```
-analysts.find(id == "analyst_001")
-  → Get reports_submitted
-  → Join with report_summaries
-  → Also: thesis_points.filter(author == "analyst_001")
+thesis_points.filter(author == "analyst_type_1")
+  → Get supporting_sources
+  → Check analyst_summaries for position/summary
 ```
 
 **"Where do analysts disagree?"**
 ```
 thesis_points.filter(analyst_disagreements IS NOT EMPTY)
-  → Review positions
-  → Cross-reference interpretations
+  → Review positions by analyst_type
 ```
 
-**"How does analyst X interpret source Y?"**
+**"What's the current analyst consensus?"**
 ```
-sources.find(id == "src_001").thesis_relevance.interpretations
-  → Filter by analyst
-  → Compare with others
-```
-
-**"What reports submitted?"**
-```
-report_summaries.sort_by(date ASC)
-  → Group by analyst
-  → Separate director_feedback
+analyst_summaries.summaries
+  → Group by position (LONG/SHORT/PASS)
+  → Compare across analyst types
 ```
 
-### Bidirectional Navigation
+### Bidirectional Navigation (v2 Slim)
 
 | Starting Point | Can Navigate To |
 |----------------|-----------------|
-| Analyst → | Reports, thesis points authored, disagreements |
-| Thesis Point → | Author, sources, debates, disagreements |
-| Source → | Thesis points, debates, per-analyst interpretations |
+| Analyst Type → | thesis_points.filter(author), analyst_summaries |
+| Thesis Point → | Author (analyst_type_X), sources, debates, disagreements |
+| Source → | Thesis points via thesis_relevance |
 | Key Debate → | Bull/bear sources, thesis points |
-| Research Iteration → | Analyst, thesis points added, action items |
-| Report Summary → | Analyst, thesis points introduced/validated/challenged |
+| Research Iteration → | thesis_points_added, action_items |
 
 ### Downstream Agent Integration
 
@@ -919,37 +712,26 @@ report_summaries.sort_by(date ASC)
 | Thesis validation | thesis_points → source coverage → analyst_disagreements |
 | Risk assessment | key_debates (open) → bear cases → analyst disagreements |
 | Due diligence | sources → completeness by type |
-| Research planning | research_iterations → action_items → report_summaries |
+| Research planning | research_iterations → action_items |
 | Debate resolution | key_debates → bull/bear sources |
-| Analyst comparison | analysts → thesis_points by author → disagreements |
-| Consensus building | thesis_points with disagreements → interpretations → synthesis |
+| Analyst comparison | thesis_points grouped by author → disagreements |
+| Consensus building | analyst_summaries → thesis_points → synthesis |
 
 ---
 
-## Amendment Rules
+## Amendment Rules (v2 Slim)
 
 When source URL exists:
 
 | Condition | Action |
 |-----------|--------|
 | Summary thin/generic | Enrich with context |
-| New report cites source | Append to `cited_in` |
 | New tags identified | Merge into `tags` (dedupe) |
 | `source_date` incorrect | Correct it |
 | New context changes understanding | Enhance summary |
+| Thesis relevance updated | Update `supports`/`challenges`/`informs_debates` |
 
-**Always**:
-- Update `amended_at`
-- Append to `reason` (semicolon-separated)
-
-**Reason evolution**:
-```
-"Added from GS sector report"
-    ↓
-"Added from GS sector report; enriched with 10-K margin detail"
-    ↓
-"Added from GS sector report; enriched with 10-K margin detail; added tags per mgmt call"
-```
+**Note**: In v2 schema, `cited_in`, `amended_at`, and `reason` are removed. Summary enrichment captures the audit trail implicitly.
 
 ---
 
@@ -970,18 +752,18 @@ OUTPUT: "https://sec.gov/Archives/edgar/..."
 
 ---
 
-## Behavioral Rules
+## Behavioral Rules (v2 Slim)
 
 | Rule | Description |
 |------|-------------|
 | **Never delete** | Sources are append-only |
-| **Preserve history** | Reason field is append-only |
+| **Enrich summaries** | Amend adds context to summary, not separate reason field |
 | **Dedupe by URL** | Normalized URL is unique key |
 | **Sequential IDs** | Find max `src_XXX`, increment |
-| **Validate links** | Flag invalid URLs in reason, still add entry |
-| **Handle dupes** | Process URL once, combine `cited_in` references |
+| **Validate links** | Flag invalid URLs in summary note, still add entry |
 | **Extend categories** | Add unknown types to `categories.custom` |
-| **Always timestamp** | Every add/amend gets timestamp |
+| **Always timestamp** | New sources get `added_at` timestamp |
+| **Set schema_version** | Always set `schema_version: 2` |
 
 ---
 
@@ -1058,17 +840,18 @@ NVDA_webSource.json
 
 ---
 
-## Integration Notes
+## Integration Notes (v2 Slim)
 
-With research lineage, transforms from **source library** to **research knowledge graph**.
+With research lineage, transforms from **source library** to **research knowledge graph** at ~40% smaller file sizes.
 
 ### Core Properties
 
 - **Structured JSON**: Easy to parse, filter, query
-- **Consistent schema**: Predictable field locations
+- **Consistent schema**: Predictable field locations with schema_version tracking
 - **Rich metadata**: Sophisticated filtering (`type`, `tags`, `source_date`, `thesis_relevance`)
-- **Audit trail**: `reason`, `cited_in`, `research_iterations` provide provenance
+- **Audit trail**: `research_iterations` provide provenance
 - **Extensible**: Custom categories and thesis points grow with needs
+- **Compact**: v2 schema removes redundant fields, keeping essential data only
 
 ### Research Lineage Impact
 
@@ -1080,7 +863,7 @@ With `analyst_reports`/`director_feedback`:
 - **Research knowledge graph** — captures analytical context
 - Good for: thesis reconstruction, debate tracking, institutional knowledge
 
-### Knowledge Graph Advantage
+### Knowledge Graph Advantage (v2)
 
 | Question | Where to Look |
 |----------|---------------|
@@ -1088,10 +871,10 @@ With `analyst_reports`/`director_feedback`:
 | Director challenged? | `thesis_points.filter(director_notes CONTAINS "Challenged")` |
 | Thinking evolution? | `research_iterations` (chronological) |
 | Open debates? | `key_debates.filter(status == "open")` |
-| Why source important? | `source.thesis_relevance.interpretations` |
-| Who wrote this? | `thesis_point.author` → `analysts.find(id)` |
+| Why source important? | `source.thesis_relevance.supports/challenges` |
+| Who wrote this? | `thesis_point.author` (analyst_type_X) |
 | Analyst disagreements? | `thesis_points.filter(analyst_disagreements IS NOT EMPTY)` |
-| Analyst contributions? | `report_summaries.filter(analyst == id)` |
+| Analyst positions? | `analyst_summaries.summaries` |
 
 ### Downstream Uses
 
@@ -1102,11 +885,11 @@ With `analyst_reports`/`director_feedback`:
 | Competitive analysis | Filter industry sources | Link to competitive thesis points |
 | Risk assessment | Filter litigation/regulatory | Start from key_debates (open) |
 | Research continuation | Re-read sources manually | Resume from iterations, review action_items |
-| PM briefing | Summarize by category | Present thesis_points with confidence |
+| PM briefing | Summarize by category | Present analyst_summaries with thesis_points |
 
 ---
 
-## Quick Reference
+## Quick Reference (v2 Slim)
 
 ```
 ADD NEW SOURCE
@@ -1114,35 +897,29 @@ ADD NEW SOURCE
 1. Normalize URL
 2. Check existing → if yes, AMEND
 3. Generate next src_XXX ID
-4. Populate required fields
+4. Populate: id, type, url, title, summary, tags, added_at
 5. Initialize thesis_relevance (empty if no context)
-6. Set added_at = now, amended_at = null
-7. If type not in categories, add to custom
+6. If type not in categories, add to custom
 
 AMEND EXISTING SOURCE
 ──────────────────────
 1. Find by normalized URL
-2. Enrich summary if new context
+2. Enrich summary if new context adds value
 3. Merge tags (dedupe)
-4. Append to cited_in
-5. Update thesis_relevance if new context
-6. Append to reason (semicolon-separated)
-7. Set amended_at = now
+4. Update thesis_relevance.supports/challenges/informs_debates
 
 PROCESS ANALYST REPORT
 ──────────────────────
-1. Parse filename → extract initials
-2. Resolve analyst → register or match (see REGISTER ANALYST)
-3. Extract sources → queue for reconciliation
-4. Extract thesis claims → create tp_XXX
-   └─► Set author = analyst_id
-5. Check disagreements with existing thesis_points
+1. Identify analyst_type (1-6) from context
+2. Extract sources → queue for reconciliation
+3. Extract thesis claims → create tp_XXX
+   └─► Set author = analyst_type_X
+4. Check disagreements with existing thesis_points
    └─► Add to analyst_disagreements where applicable
-6. Link thesis_points to sources
-7. Extract debates → create kd_XXX
-8. Populate thesis_relevance.interpretations
-9. Log iteration (include analyst)
-10. Create report_summary
+5. Link thesis_points to sources
+6. Extract debates → create kd_XXX
+7. Log iteration in research_iterations
+8. Update analyst_summaries
 
 PROCESS DIRECTOR FEEDBACK
 ─────────────────────────
@@ -1152,34 +929,19 @@ PROCESS DIRECTOR FEEDBACK
 4. Update director_guidance on key_debates
 5. If resolved → update status, add resolution
 6. Extract action_items → log in iterations
-7. Log iteration (no analyst field)
-8. Create report_summary (type: director_feedback)
-
-REGISTER ANALYST
-────────────────
-1. Parse initials: analyst_report_[XX]_v[N].md
-2. Search analysts for match (case-insensitive)
-3. Match → use analyst_id, add filename to reports_submitted
-4. No match AND < max_analysts:
-   └─► Generate analyst_XXX
-   └─► Prompt for name, focus_areas
-   └─► Create entry, add filename
-5. No match AND limit reached → reject, alert
+7. Log iteration in research_iterations
 
 PROCESS ANALYST DISAGREEMENT
 ────────────────────────────
 1. Identify thesis_point disagreed with
 2. Determine position: skeptical | contrary | nuanced
-3. Create entry: analyst, position, note
+3. Create entry: analyst (analyst_type_X), position, note
 4. Append to thesis_point.analyst_disagreements
-5. If same source cited differently:
-   └─► Add to source.thesis_relevance.interpretations
 
 RECONCILE THESIS LINKS
 ──────────────────────
 1. thesis_point: verify supporting_sources exist
-2. thesis_point: verify author in analysts
-3. source: verify thesis_relevance IDs valid
-4. interpretation: verify analyst exists
-5. Flag orphaned references
+2. thesis_point: verify author format is analyst_type_X
+3. source: verify thesis_relevance IDs reference valid thesis_points
+4. Flag orphaned references
 ```

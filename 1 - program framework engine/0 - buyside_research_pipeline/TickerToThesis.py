@@ -875,6 +875,8 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         market context. This augments the user's thesis (if provided)
         or generates a starting thesis (if empty).
 
+        Sources from Perplexity are added to WebSource.json.
+
         Returns:
             Concise summary of current investment debates for the ticker.
         """
@@ -899,7 +901,8 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
                         "paradigm changes. Is this an existential threat to the moat, or a transformative opportunity?\n"
                         "2. STRATEGIC PIVOTS: Is management making a bold bet the market undervalues?\n"
                         "3. VARIANT VIEW: What does the market believe that might be wrong?\n\n"
-                        "Be specific and narrative-driven. Surface debates, not just facts."
+                        "Be specific and narrative-driven. Surface debates, not just facts.\n\n"
+                        "IMPORTANT: Include URLs for all sources you reference. Format citations with full URLs."
                     ),
                     user_prompt=query,
                     provider="perplexity",
@@ -909,6 +912,10 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
 
             if result.is_success:
                 logger.info(f"Thesis bootstrap complete: {result.token_usage.total_tokens:,} tokens")
+
+                # Add sources from bootstrap to WebSource.json
+                await self._update_sources_from_bootstrap(result)
+
                 return result.content
             else:
                 logger.warning(f"Thesis bootstrap failed: {result.error}")
@@ -917,6 +924,55 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         except Exception as e:
             logger.warning(f"Thesis bootstrap exception: {e}")
             return ""
+
+    async def _update_sources_from_bootstrap(self, bootstrap_report: AgentReport) -> bool:
+        """Update WebSource.json with sources from thesis bootstrap.
+
+        Args:
+            bootstrap_report: The Perplexity response from _bootstrap_thesis()
+
+        Returns:
+            True if sources were added successfully
+        """
+        if not bootstrap_report.is_success:
+            return False
+
+        logger.info("Extracting sources from thesis bootstrap...")
+
+        # Build source update prompt
+        update_prompt = self.source_manager.build_source_update_prompt(
+            bootstrap_report.content,
+            report_type="thesis_bootstrap",
+        )
+
+        # Run source summary agent to parse and merge sources
+        call = AgentCall(
+            role=AgentRole.SOURCE_SUMMARY,
+            system_prompt=self.prompt_loader.source_summary_agent,
+            user_prompt=update_prompt,
+            iteration=0,
+            identifier="source_update_bootstrap",
+        )
+
+        source_response = await self.agent_runner.run_single(call)
+
+        if not source_response.is_success:
+            logger.warning(f"Bootstrap source extraction failed: {source_response.error}")
+            return False
+
+        update_success = self.source_manager.update_from_report(
+            bootstrap_report.content,
+            source_response.content
+        )
+
+        if update_success:
+            logger.info("WebSource.json updated with bootstrap sources")
+            # Emit source update event for dashboard
+            self.progress.emit_source_updated(new_citations=1)
+            return True
+
+        logger.warning("Failed to update WebSource.json from bootstrap")
+        return False
 
     async def _run_initial_source_scout(self) -> None:
         """Run source scout to gather baseline data before iteration 1.

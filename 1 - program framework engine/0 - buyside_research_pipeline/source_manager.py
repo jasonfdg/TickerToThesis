@@ -48,13 +48,12 @@ class SourceManager:
         self._cache: Optional[Dict[str, Any]] = None
 
     def _get_empty_source_file(self) -> Dict[str, Any]:
-        """Create an empty source file structure."""
+        """Create an empty source file structure (v2 slim schema)."""
         return {
             "ticker": self.ticker,
             "last_updated": datetime.now().isoformat(),
             "source_count": 0,
-            "config": {"max_analysts": 10},
-            "analysts": [],
+            "schema_version": 2,
             "categories": {
                 "core": [
                     "sec_filing",
@@ -74,7 +73,6 @@ class SourceManager:
                 "key_debates": [],
                 "research_iterations": [],
             },
-            "report_summaries": [],
             "sources": [],
         }
 
@@ -672,6 +670,61 @@ Example of correct output format:
             f"Logged research iteration: {report_name} "
             f"({iteration_type}, +{sources_added} sources)"
         )
+
+    def archive_old_iterations(self, keep_latest: int = 2) -> Optional[Path]:
+        """
+        Move old iterations to archive, keeping only latest N active.
+
+        Prevents unbounded growth of research_iterations array.
+
+        Args:
+            keep_latest: Number of recent iterations to keep (default: 2)
+
+        Returns:
+            Path to archive file if archival occurred, None otherwise
+        """
+        data = self.load_source_file()
+        iterations = data.get("research_context", {}).get("research_iterations", [])
+
+        if len(iterations) <= keep_latest:
+            logger.debug(f"No archival needed: {len(iterations)} iterations <= {keep_latest}")
+            return None
+
+        # Split into archive and keep
+        to_archive = iterations[:-keep_latest]
+        to_keep = iterations[-keep_latest:]
+
+        # Build archive file path
+        archive_path = self.source_file_path.parent / f"{self.ticker}_archive.json"
+
+        # Load or create archive
+        archive_data: Dict[str, Any] = {"ticker": self.ticker, "archived_iterations": []}
+        if archive_path.exists():
+            try:
+                archive_data = json.loads(archive_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid archive JSON, starting fresh: {archive_path}")
+
+        # Append to archive
+        archive_data["archived_iterations"].extend(to_archive)
+        archive_data["last_archived"] = datetime.now().isoformat()
+        archive_data["total_archived"] = len(archive_data["archived_iterations"])
+
+        # Save archive
+        archive_path.write_text(
+            json.dumps(archive_data, indent=2, ensure_ascii=False),
+            encoding="utf-8"
+        )
+
+        # Update main file with only recent iterations
+        data["research_context"]["research_iterations"] = to_keep
+        self.save_source_file(data)
+
+        logger.info(
+            f"Archived {len(to_archive)} iterations to {archive_path.name}, "
+            f"keeping {len(to_keep)} active"
+        )
+        return archive_path
 
     def get_thesis_points(self) -> List[Dict[str, Any]]:
         """Get all thesis points from the source file."""

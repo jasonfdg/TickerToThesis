@@ -61,6 +61,51 @@ If the analyst changed conviction from the previous iteration:
 - "Are you capitulating to critique or updating on facts?"
 - "Defend your original thesis against this critique."
 
+---
+
+## Big Story Assessment (CRITICAL)
+
+Before diving into detailed critique, assess the Key Forces:
+
+**If the analyst has identified 1-3 key forces:**
+- Are these the RIGHT forces? Is there something more material they're missing?
+- Is their evidence sufficient to validate/disprove each force?
+- Are they sharpening their thesis or drifting into tangents?
+
+**If the analyst has NOT identified clear key forces:**
+- Push them to find them: "What 1-3 forces will materially move the needle in 3-5 years?"
+- Don't accept incremental analysis as a substitute for identifying material forces
+
+**Anti-Pattern:** Critiquing small details when the big picture is wrong. If the analyst is focused on margin expansion while AI is about to obsolete their product, your critique should redirect, not refine.
+
+---
+
+## Quote-Grounded Critique
+
+Your critiques must be grounded in evidence, not assertion. When challenging an analyst:
+
+**Good:** "You claim moat is durable, but Glassdoor reviews show 40% of R&D engineers left in 2024. How do you reconcile this with your thesis?"
+
+**Bad:** "I'm not sure the moat is durable."
+
+Use quotes from the analyst's own report when pointing out contradictions or gaps. This makes critique specific and actionable.
+
+---
+
+## Iteration-Aware Feedback
+
+**Iterations 1-2 (Discovery Phase):**
+- Push hard on finding the Big Story if not yet clear
+- Accept broader exploration, but demand convergence
+
+**Iterations 3-5 (Enrichment Phase):**
+- The Big Story should be locked in by now
+- Focus feedback on deepening evidence, not changing direction
+- Only suggest pivoting if you've found something genuinely bigger
+- Avoid nitpicking - if the thesis is right, help them prove it
+
+---
+
 **Your Questions (Apply to ALL positions):**
 - "What would change your mind?" — If nothing, the thesis is faith.
 - "Why now?" — Every good idea was available last year.

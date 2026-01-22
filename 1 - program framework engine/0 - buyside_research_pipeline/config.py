@@ -9,6 +9,13 @@ import os
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+# =============================================================================
+# Dashboard Configuration
+# =============================================================================
+DASHBOARD_PORT: int = int(os.getenv("TTT_DASHBOARD_PORT", "8765"))
+DASHBOARD_ENABLED: bool = os.getenv("TTT_DASHBOARD_ENABLED", "true").lower() == "true"
+DASHBOARD_HOST: str = os.getenv("TTT_DASHBOARD_HOST", "127.0.0.1")
+
 # Base paths
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRAMEWORK_ENGINE = PROJECT_ROOT / "1 - program framework engine"
@@ -87,6 +94,10 @@ class PipelineConfig:
     multi_provider: bool = True  # Enable multi-provider architecture
     parallel_execution: bool = True  # Enable parallel execution across providers
 
+    # Pipeline mode: "full" or "light"
+    # Light mode uses gpt-4o-mini for most agents (~$0.20/ticker vs ~$2.50)
+    pipeline_mode: str = "full"
+
     # Pipeline settings
     num_iterations: int = 5  # Full debate cycle
     num_analysts: int = 6
@@ -160,6 +171,19 @@ ROLE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
     "source_scout": {"provider": "perplexity", "model": "sonar"}, # Real web search
 }
 
+# Light mode: Use gpt-4o-mini for most agents (cheap + fast)
+# Exceptions: Perplexity for web search, Gemini for synthesis
+# Cost: ~$0.20/ticker vs ~$2.50/ticker for full mode
+LIGHT_MODE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
+    "analyst": {"provider": "openai", "model": "gpt-4o-mini"},
+    "rd_review": {"provider": "openai", "model": "gpt-4o-mini"},
+    "source_summary": {"provider": "openai", "model": "gpt-4o-mini"},
+    "human_readable": {"provider": "openai", "model": "gpt-4o-mini"},
+    # Keep these on premium providers:
+    "source_scout": {"provider": "perplexity", "model": "sonar"},
+    "rd_synthesis": {"provider": "gemini", "model": "gemini-2.5-pro"},
+}
+
 
 # =============================================================================
 # Provider Mode Configuration
@@ -194,29 +218,50 @@ COMPONENT_OVERRIDES: Dict[str, Dict[str, str]] = {
 }
 
 
-def get_effective_provider(component: str, iteration: int = 1) -> Tuple[str, str]:
+def get_effective_provider(
+    component: str,
+    iteration: int = 1,
+    pipeline_mode: str | None = None
+) -> Tuple[str, str]:
     """Get provider/model for a component, respecting overrides and mode.
 
     Priority order:
     1. Explicit COMPONENT_OVERRIDES entry
-    2. PROVIDER_MODE substitution (api->cli for Claude providers)
-    3. Default routing from ANALYST_PROVIDER_CONFIG / ROLE_PROVIDER_CONFIG
+    2. Light mode config (if pipeline_mode == "light")
+    3. PROVIDER_MODE substitution (api->cli for Claude providers)
+    4. Default routing from ANALYST_PROVIDER_CONFIG / ROLE_PROVIDER_CONFIG
 
     Args:
         component: Component identifier (e.g., "analyst_1", "rd_synthesis")
         iteration: Pipeline iteration (affects analyst routing in iteration 1)
+        pipeline_mode: "full" or "light" - if None, uses current global mode.
+                       Light mode uses gpt-4o-mini for most agents.
 
     Returns:
         Tuple of (provider_type, model)
     """
     mode = os.getenv("PROVIDER_MODE", PROVIDER_MODE)
+    effective_pipeline_mode = pipeline_mode if pipeline_mode is not None else _current_pipeline_mode
 
     # 1. Check for explicit override
     if component in COMPONENT_OVERRIDES:
         override = COMPONENT_OVERRIDES[component]
         return override["provider"], override["model"]
 
-    # 2. Determine default provider based on component type
+    # 2. Light mode: check LIGHT_MODE_PROVIDER_CONFIG first
+    if effective_pipeline_mode == "light":
+        # Determine component type for light mode lookup
+        if component.startswith("analyst_"):
+            light_config = LIGHT_MODE_PROVIDER_CONFIG.get("analyst")
+        elif component.startswith("rd_review_"):
+            light_config = LIGHT_MODE_PROVIDER_CONFIG.get("rd_review")
+        else:
+            light_config = LIGHT_MODE_PROVIDER_CONFIG.get(component)
+
+        if light_config:
+            return light_config["provider"], light_config["model"]
+
+    # 3. Determine default provider based on component type (full mode)
     default_provider = None
     default_model = None
 
@@ -242,7 +287,7 @@ def get_effective_provider(component: str, iteration: int = 1) -> Tuple[str, str
         default_provider = config.get("provider", "claude")
         default_model = config.get("model", "sonnet")
 
-    # 3. Apply mode-based substitution
+    # 4. Apply mode-based substitution
     # If mode is "cli" and default provider is "claude", use "claude-cli" instead
     if mode == "cli" and default_provider == "claude":
         return "claude-cli", default_model
@@ -276,15 +321,40 @@ def _get_current_date() -> str:
 # Cache for output directory to ensure consistency within a run
 _output_dir_cache: Dict[str, Path] = {}
 
+# Current pipeline mode for path functions (set via set_pipeline_mode())
+_current_pipeline_mode: str = "full"
 
-def _find_todays_folder(ticker: str) -> Path | None:
+
+def set_pipeline_mode(mode: str) -> None:
+    """Set the current pipeline mode for path functions.
+
+    Args:
+        mode: "full" or "light"
+    """
+    global _current_pipeline_mode
+    if mode not in ("full", "light"):
+        raise ValueError(f"Invalid pipeline mode: {mode}. Must be 'full' or 'light'.")
+    _current_pipeline_mode = mode
+
+
+def get_pipeline_mode() -> str:
+    """Get the current pipeline mode."""
+    return _current_pipeline_mode
+
+
+def _find_todays_folder(ticker: str, mode: str = "full") -> Path | None:
     """Find an existing folder for this ticker with today's date.
 
     This ensures consistency even if the cache is not shared across imports.
+
+    Args:
+        ticker: Stock ticker symbol
+        mode: Pipeline mode ("full" or "light") - light mode folders have "-light" suffix
     """
     import re
     date_str = _get_current_date()
-    pattern = re.compile(rf"^{ticker}_V(\d+)_{date_str}$")
+    suffix = "-light" if mode == "light" else ""
+    pattern = re.compile(rf"^{ticker}_V(\d+)_{date_str}{suffix}$")
 
     if not REPORT_OUTPUT.exists():
         return None
@@ -305,36 +375,41 @@ def _find_todays_folder(ticker: str) -> Path | None:
     return best_folder
 
 
-def get_output_dir(ticker: str, create_new: bool = False) -> Path:
+def get_output_dir(ticker: str, create_new: bool = False, mode: str | None = None) -> Path:
     """Get the output directory for a specific ticker.
 
-    Naming convention: TICKER_V#_YYYY-MM-DD
+    Naming convention: TICKER_V#_YYYY-MM-DD[-light]
 
     Args:
         ticker: Stock ticker symbol
         create_new: If True, always create a new versioned directory.
                    If False, return existing directory for today or create new.
+        mode: Pipeline mode ("full" or "light") - if None, uses current global mode.
+              Light mode appends "-light" suffix.
     """
     ticker = ticker.upper()
+    effective_mode = mode if mode is not None else _current_pipeline_mode
+    cache_key = f"{ticker}_{effective_mode}"
 
     # Return cached directory if available (ensures consistency within a run)
-    if ticker in _output_dir_cache and not create_new:
-        return _output_dir_cache[ticker]
+    if cache_key in _output_dir_cache and not create_new:
+        return _output_dir_cache[cache_key]
 
     # Check for existing folder with today's date (handles cache inconsistency across imports)
     if not create_new:
-        existing_folder = _find_todays_folder(ticker)
+        existing_folder = _find_todays_folder(ticker, effective_mode)
         if existing_folder:
-            _output_dir_cache[ticker] = existing_folder
+            _output_dir_cache[cache_key] = existing_folder
             return existing_folder
 
     # Create new versioned folder
     version = _get_next_version(ticker)
     date_str = _get_current_date()
-    dir_name = f"{ticker}_V{version}_{date_str}"
+    suffix = "-light" if effective_mode == "light" else ""
+    dir_name = f"{ticker}_V{version}_{date_str}{suffix}"
     output_dir = REPORT_OUTPUT / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
-    _output_dir_cache[ticker] = output_dir
+    _output_dir_cache[cache_key] = output_dir
 
     return output_dir
 

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTT Pipeline Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <span class="logo">TTT PIPELINE MONITOR</span>
+            </div>
+            <div class="header-center">
+                <span class="ticker" id="ticker">----</span>
+            </div>
+            <div class="header-right">
+                <span class="timestamp" id="timestamp">--:--:--</span>
+                <span class="status-badge" id="status-badge">IDLE</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Pipeline Progress -->
+            <section class="panel progress-panel">
+                <h2 class="panel-title">PIPELINE PROGRESS</h2>
+                <div class="progress-container">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <div class="progress-label" id="progress-label">
+                        Iteration 0/5 &bull; Waiting
+                    </div>
+                </div>
+                <div class="progress-stats">
+                    <span id="elapsed-time">Elapsed: --:--</span>
+                    <span id="est-remaining">Est. Remaining: --:--</span>
+                    <span id="total-tokens">Tokens: 0</span>
+                </div>
+            </section>
+
+            <!-- Thesis Evolution -->
+            <section class="panel thesis-panel">
+                <h2 class="panel-title">THESIS EVOLUTION</h2>
+                <div class="thesis-content" id="thesis-content">
+                    <p class="placeholder">Thesis summary will appear here as the pipeline progresses...</p>
+                </div>
+            </section>
+
+            <!-- Agent Panels Row -->
+            <div class="agent-row">
+                <!-- Analysts Panel -->
+                <section class="panel agents-panel">
+                    <h2 class="panel-title">ANALYSTS</h2>
+                    <ul class="agent-list" id="analyst-list">
+                        <li class="agent-item" data-id="1">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">Quality Compounders</span>
+                        </li>
+                        <li class="agent-item" data-id="2">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">Imaginative Growth</span>
+                        </li>
+                        <li class="agent-item" data-id="3">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">Fundamental L/S</span>
+                        </li>
+                        <li class="agent-item" data-id="4">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">Deep Value</span>
+                        </li>
+                        <li class="agent-item" data-id="5">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">Event-Driven</span>
+                        </li>
+                        <li class="agent-item" data-id="6">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">Macro-Tactical</span>
+                        </li>
+                    </ul>
+                </section>
+
+                <!-- RD Reviews Panel -->
+                <section class="panel agents-panel">
+                    <h2 class="panel-title">RD REVIEWS</h2>
+                    <ul class="agent-list" id="rd-list">
+                        <li class="agent-item" data-id="1">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">RD Review 1</span>
+                        </li>
+                        <li class="agent-item" data-id="2">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">RD Review 2</span>
+                        </li>
+                        <li class="agent-item" data-id="3">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">RD Review 3</span>
+                        </li>
+                        <li class="agent-item" data-id="4">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">RD Review 4</span>
+                        </li>
+                        <li class="agent-item" data-id="5">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">RD Review 5</span>
+                        </li>
+                        <li class="agent-item" data-id="6">
+                            <span class="agent-status pending"></span>
+                            <span class="agent-name">RD Review 6</span>
+                        </li>
+                    </ul>
+                </section>
+            </div>
+
+            <!-- Activity Log -->
+            <section class="panel log-panel">
+                <h2 class="panel-title">ACTIVITY LOG</h2>
+                <div class="log-container" id="log-container">
+                    <div class="log-entry">
+                        <span class="log-time">--:--:--</span>
+                        <span class="log-message">Waiting for pipeline to start...</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Cost Tracker -->
+            <section class="panel cost-panel">
+                <h2 class="panel-title">COST TRACKER</h2>
+                <div class="cost-grid">
+                    <div class="cost-item">
+                        <span class="cost-label">Claude CLI</span>
+                        <span class="cost-value" id="cost-claude">$0.00</span>
+                    </div>
+                    <div class="cost-item">
+                        <span class="cost-label">OpenAI</span>
+                        <span class="cost-value" id="cost-openai">$0.00</span>
+                    </div>
+                    <div class="cost-item">
+                        <span class="cost-label">Gemini</span>
+                        <span class="cost-value" id="cost-gemini">$0.00</span>
+                    </div>
+                    <div class="cost-item total">
+                        <span class="cost-label">TOTAL</span>
+                        <span class="cost-value" id="cost-total">$0.00</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Final Reports (hidden until complete) -->
+            <section class="panel reports-panel" id="reports-panel" style="display: none;">
+                <h2 class="panel-title">📄 FINAL REPORTS</h2>
+                <div class="reports-grid">
+                    <a href="#" class="report-link" id="report-en" target="_blank">
+                        <span class="report-icon">🇺🇸</span>
+                        <span class="report-label">English Report</span>
+                        <span class="report-format">PDF</span>
+                    </a>
+                    <a href="#" class="report-link" id="report-cn" target="_blank">
+                        <span class="report-icon">🇨🇳</span>
+                        <span class="report-label">中文报告</span>
+                        <span class="report-format">PDF</span>
+                    </a>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Completion notification sound -->
+    <audio id="chime" preload="auto">
+        <source src="/static/chime.wav" type="audio/wav">
+    </audio>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

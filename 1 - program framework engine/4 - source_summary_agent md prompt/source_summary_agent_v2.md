@@ -65,15 +65,20 @@ Each extraction object contains:
    │   ├─ URL exists? → AMEND (enrich summary, merge tags, add to cited_in)
    │   └─ URL new? → ADD (generate next src_XXX, populate fields)
    │
-   └─ For each thesis_claim:
-       ├─ Similar claim exists? → ADD analyst_disagreement if different stance
-       └─ New claim? → CREATE thesis_point with author
+   ├─ For each thesis_claim:
+   │   ├─ Similar claim exists? → ADD analyst_disagreement if different stance
+   │   └─ New claim? → CREATE thesis_point with author
+   │
+   └─ For analyst_summary:
+       └─ Extract position, target_price, summary (3-5 sentences)
 
-3. LOG research_iteration entry
+3. UPDATE analyst_summaries (replace all for this iteration)
 
-4. UPDATE source_count, last_updated
+4. LOG research_iteration entry
 
-5. OUTPUT complete JSON
+5. UPDATE source_count, last_updated
+
+6. OUTPUT complete JSON
 ```
 
 ---
@@ -95,7 +100,12 @@ Each extraction object contains:
   "research_context": {
     "thesis_points": [],
     "key_debates": [],
-    "research_iterations": []
+    "research_iterations": [],
+    "analyst_summaries": {
+      "iteration": 1,
+      "last_updated": "2026-01-21T10:00:00Z",
+      "summaries": []
+    }
   },
 
   "sources": []
@@ -141,6 +151,55 @@ Each extraction object contains:
 1. Only create for claims with clear stance + quantification
 2. Link to sources extracted in same report
 3. Set author = `analyst_type_X` based on analyst_type in extraction
+
+---
+
+## Analyst Summaries
+
+**Purpose**: Provide the Research Director with a dense, actionable summary of each analyst's position for cross-analyst awareness.
+
+**Extract for EACH analyst in the extraction batch:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type_id` | Yes | Analyst type (1-6) |
+| `type_name` | Yes | Human-readable name (e.g., "Quality Compounder") |
+| `position` | Yes | "LONG", "SHORT", or "PASS" |
+| `target_price` | No | Target price if stated (e.g., "$85") |
+| `summary` | Yes | 3-5 sentence dense summary |
+
+**Summary Writing Standard:**
+
+The summary must capture:
+1. **Core thesis** — The central investment argument
+2. **Key evidence** — Most compelling supporting data (quantified)
+3. **Risk acknowledged** — Main risk the analyst recognizes
+4. **Unique insight** — What this analyst sees that others might miss
+
+**Example:**
+```json
+{
+  "type_id": 1,
+  "type_name": "Quality Compounder",
+  "position": "LONG",
+  "target_price": "$85",
+  "summary": "Bull thesis centered on durable competitive moat through platform integration. Key evidence: 126% NRR demonstrates pricing power, Q3 revenue +31% YoY with improving FCF margins. Main risk acknowledged: Microsoft bundling pressure could erode enterprise wins. Unique insight: Enterprise switching costs (18-30 month migrations, $2-3M cost) are underappreciated by market as a defensive moat."
+}
+```
+
+**Analyst Type Names:**
+- 1: "Quality Compounder"
+- 2: "Imaginative Growth"
+- 3: "Fundamental L/S"
+- 4: "Deep Value"
+- 5: "Event-Driven"
+- 6: "Macro-Tactical"
+
+**Update Rules:**
+1. Replace all summaries each iteration (not append)
+2. Set `iteration` to current iteration number
+3. Set `last_updated` to current timestamp
+4. If an analyst's position changes, update with new summary
 
 ---
 
@@ -376,3 +435,12 @@ Position types:
 1. Create research_iterations entry
 2. Count sources_added
 3. List thesis_points_added IDs
+
+**UPDATE ANALYST SUMMARIES:**
+1. For each analyst in extractions batch:
+   - Extract position (LONG/SHORT/PASS)
+   - Extract target_price if stated
+   - Write 3-5 sentence summary: thesis + evidence + risk + unique insight
+2. Set iteration = current iteration
+3. Set last_updated = current timestamp
+4. Replace all summaries (don't append)

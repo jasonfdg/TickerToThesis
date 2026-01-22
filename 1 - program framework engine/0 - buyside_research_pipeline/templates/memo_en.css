@@ -4,36 +4,13 @@
 
 @charset "UTF-8";
 
-/* ===== WEB FONTS ===== */
-/* Inter from Google Fonts - enables reliable rendering in WeasyPrint */
-@font-face {
-    font-family: "Inter";
-    src: url('https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMw2boKoduKmMEVuLyfAZ9hjp-Ek-_EeA.woff2') format('woff2');
-    font-weight: 400;
-    font-style: normal;
-}
-
-@font-face {
-    font-family: "Inter";
-    src: url('https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMw2boKoduKmMEVuI6fAZ9hjp-Ek-_EeA.woff2') format('woff2');
-    font-weight: 600;
-    font-style: normal;
-}
-
-@font-face {
-    font-family: "Inter";
-    src: url('https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMw2boKoduKmMEVuFuYAZ9hjp-Ek-_EeA.woff2') format('woff2');
-    font-weight: 700;
-    font-style: normal;
-}
-
 /* ===== PAGE SETUP ===== */
 @page {
     size: A4;
     margin: 1.5cm 1.5cm;
     @top-right {
         content: counter(page);
-        font-family: "Inter", sans-serif;
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
         font-size: 9pt;
         color: #666;
     }
@@ -47,14 +24,12 @@
 
 /* ===== BASE TYPOGRAPHY ===== */
 body {
-    font-family: "Inter", Georgia, serif;
+    font-family: Georgia, "Times New Roman", Times, serif;
     font-size: 9pt;
     line-height: 1.4;
     color: #1a1a1a;
     margin: 0;
     padding: 0;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
 }
 
 /* Container */
@@ -66,7 +41,7 @@ body {
 
 /* ===== HEADERS ===== */
 h1 {
-    font-family: "Inter", sans-serif;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 16pt;
     font-weight: 700;
     color: #333;
@@ -76,7 +51,7 @@ h1 {
 }
 
 h2 {
-    font-family: "Inter", sans-serif;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 11pt;
     font-weight: 600;
     color: #333;
@@ -86,7 +61,7 @@ h2 {
 }
 
 h3 {
-    font-family: "Inter", sans-serif;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 10pt;
     font-weight: 600;
     color: #2a2a2a;
@@ -94,7 +69,7 @@ h3 {
 }
 
 h4 {
-    font-family: "Inter", sans-serif;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 9pt;
     font-weight: 600;
     color: #333;
@@ -105,8 +80,6 @@ h4 {
 p {
     margin: 0 0 0.5em 0;
     text-align: justify;
-    hyphens: auto;
-    -webkit-hyphens: auto;
 }
 
 /* First paragraph after h1 - Executive Summary styling */
@@ -173,7 +146,7 @@ thead {
 }
 
 th {
-    font-family: "Inter", sans-serif;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-weight: 600;
     font-size: 9pt;
     padding: 10px 12px;
@@ -210,10 +183,17 @@ th:first-child {
 
 tbody tr:nth-child(odd) {
     background-color: #ffffff;
+    color: #1a1a1a;
 }
 
 tbody tr:nth-child(even) {
     background-color: #f8f9fa;
+    color: #1a1a1a;
+}
+
+/* Ensure table cells always have readable text color */
+td {
+    color: #1a1a1a;
 }
 
 /* ===== BLOCKQUOTES ===== */
@@ -253,7 +233,6 @@ pre {
     padding: 1em 1.2em;
     border: 1px solid #e0e0e0;
     border-radius: 4px;
-    overflow-x: auto;
     white-space: pre-wrap;
     word-wrap: break-word;
     line-height: 1.5;
@@ -345,6 +324,37 @@ hr {
 
 h2, h3, h4 {
     page-break-after: avoid;
+}
+
+/* ===== SOURCES SECTION ===== */
+/* Sources section - smaller text for bullet list following Sources header */
+/* This targets the list that comes after the Sources h2 header */
+
+/* Style lists that appear at the end of the memo (typically Sources) */
+.memo > ul:last-of-type,
+.memo ul:last-child {
+    font-size: 7.5pt;
+    color: #444;
+    line-height: 1.5;
+    margin-top: 0.5em;
+}
+
+.memo > ul:last-of-type li,
+.memo ul:last-child li {
+    margin-bottom: 0.4em;
+    text-align: left;
+}
+
+.memo > ul:last-of-type a,
+.memo ul:last-child a {
+    color: #0056b3;
+    text-decoration: underline;
+    font-weight: 500;
+}
+
+.memo > ul:last-of-type a:hover,
+.memo ul:last-child a:hover {
+    color: #003d82;
 }
 
 /* ===== PRINT OPTIMIZATION ===== */

@@ -114,12 +114,73 @@ class MemoPDFGenerator:
             return "zh-CN"
         return "en"
 
+    def _convert_sources_table_to_bullets(self, content: str) -> str:
+        """Convert Sources section from table format to bullet points.
+
+        The synthesis MD now includes Sources in table format. This converts
+        them to smaller bullet points for better PDF readability.
+        """
+        # Find the Sources section (English or Chinese)
+        sources_pattern = r'(##\s*(?:Sources|资料来源|信息来源|来源)\s*\n+)((?:\|[^\n]*\n)+)'
+
+        def convert_table(match):
+            header = match.group(1)
+            table_content = match.group(2)
+
+            # Parse table rows (skip header row and separator)
+            lines = table_content.strip().split('\n')
+            bullets = []
+
+            for line in lines:
+                # Skip separator lines (|---|---|...)
+                if re.match(r'\|[-:\s|]+\|', line):
+                    continue
+                # Skip header row (first row with | # | Source | etc.)
+                if '| # |' in line or '| Source |' in line or '| 来源 |' in line:
+                    continue
+
+                # Parse table cells
+                cells = [c.strip() for c in line.split('|')[1:-1]]  # Remove empty first/last
+
+                if len(cells) >= 4:
+                    # Format: | # | Source Title | URL | Type | Summary |
+                    # We want: - [Title](URL) — Type — Summary
+                    idx = cells[0].strip()
+                    title = cells[1].strip()
+                    url = cells[2].strip()
+                    src_type = cells[3].strip() if len(cells) > 3 else ''
+                    summary = cells[4].strip() if len(cells) > 4 else ''
+
+                    # Build bullet point
+                    if url and url.startswith('http'):
+                        bullet = f"- [{title}]({url})"
+                    else:
+                        bullet = f"- {title}"
+
+                    if src_type:
+                        bullet += f" — {src_type}"
+                    if summary:
+                        bullet += f" — {summary}"
+
+                    bullets.append(bullet)
+
+            # Return header + bullet list wrapped in a div for styling
+            if bullets:
+                return header + '\n'.join(bullets) + '\n'
+            return match.group(0)  # Return original if no bullets generated
+
+        return re.sub(sources_pattern, convert_table, content)
+
     def _preprocess_markdown(self, content: str) -> str:
         """Preprocess markdown to fix common formatting issues.
 
         - Ensures blank lines before list items that follow paragraphs
+        - Converts Sources table to bullet points for smaller text
         - Normalizes line endings
         """
+        # Convert Sources table to bullet point format
+        content = self._convert_sources_table_to_bullets(content)
+
         lines = content.split('\n')
         processed = []
 
@@ -157,11 +218,16 @@ class MemoPDFGenerator:
     ) -> tuple[str, str]:
         """Build complete HTML document from markdown.
 
+        Args:
+            markdown_content: Markdown content to convert.
+            lang: Language code.
+            title: Optional document title.
+
         Returns:
             Tuple of (html_content, css_content) - CSS is returned separately
             so it can be loaded with FontConfiguration for proper font handling.
         """
-        # Convert markdown to HTML
+        # Convert markdown to HTML (Sources table converted to bullets during preprocessing)
         body_html = self._markdown_to_html(markdown_content)
 
         # Load CSS for language
@@ -210,7 +276,7 @@ class MemoPDFGenerator:
             lang = self._detect_language(markdown_content)
             logger.info(f"Auto-detected language: {lang}")
 
-        # Build HTML and get CSS separately
+        # Build HTML and get CSS separately (Sources from MD converted to bullets)
         html_content, css_content = self._build_html(markdown_content, lang)
 
         # Determine output path

@@ -1,0 +1,23 @@
+# TTT Pipeline Dependencies
+# =========================
+
+# Core AI providers
+anthropic>=0.25.0
+openai>=1.12.0
+google-generativeai>=0.4.0
+
+# Environment and configuration
+python-dotenv>=1.0.0
+
+# Progress tracking
+tqdm>=4.66.0
+
+# Dashboard (browser-based progress monitor)
+fastapi>=0.109.0
+uvicorn>=0.27.0
+
+# PDF generation (optional)
+weasyprint>=60.0
+
+# HTTP client
+httpx>=0.26.0

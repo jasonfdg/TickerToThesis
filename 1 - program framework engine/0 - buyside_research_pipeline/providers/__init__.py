@@ -24,8 +24,11 @@ from .base import BaseProvider, ProviderConfig, ProviderResponse, ProviderRateLi
 from .claude import ClaudeProvider
 from .claude_cli import ClaudeCliProvider
 from .openai_provider import OpenAIProvider
+from .openai_cli import OpenAICliProvider
 from .gemini import GeminiProvider
+from .gemini_cli import GeminiCliProvider
 from .perplexity import PerplexityProvider
+from .perplexity_cli import PerplexityCliProvider
 
 try:
     from ..models import AgentRole, TokenUsage
@@ -40,11 +43,17 @@ __all__ = [
     "ProviderResponse",
     "ProviderRateLimitError",
     "BaseProvider",
+    # API providers
     "ClaudeProvider",
-    "ClaudeCliProvider",
     "OpenAIProvider",
     "GeminiProvider",
     "PerplexityProvider",
+    # CLI providers (stubs - not yet implemented except Claude)
+    "ClaudeCliProvider",
+    "OpenAICliProvider",
+    "GeminiCliProvider",
+    "PerplexityCliProvider",
+    # Routing configs
     "ANALYST_PROVIDERS",
     "ROLE_PROVIDERS",
 ]
@@ -52,11 +61,16 @@ __all__ = [
 
 class ProviderType(Enum):
     """Available provider types."""
+    # API-based providers
     CLAUDE = "claude"
-    CLAUDE_CLI = "claude-cli"  # CLI-based execution (Max subscription)
     OPENAI = "openai"
     GEMINI = "gemini"
     PERPLEXITY = "perplexity"
+    # CLI-based providers (subscription, no per-token costs)
+    CLAUDE_CLI = "claude-cli"      # Implemented - Max subscription
+    OPENAI_CLI = "openai-cli"      # Stub - not yet implemented
+    GEMINI_CLI = "gemini-cli"      # Stub - not yet implemented
+    PERPLEXITY_CLI = "perplexity-cli"  # Stub - not yet implemented
 
 
 # Analyst type -> (provider, model) mapping
@@ -133,16 +147,24 @@ class ProviderFactory:
         if provider_type not in self._providers:
             config = self._get_config(provider_type)
 
+            # API providers
             if provider_type == "claude":
                 self._providers[provider_type] = ClaudeProvider(config)
-            elif provider_type == "claude-cli":
-                self._providers[provider_type] = ClaudeCliProvider(config)
             elif provider_type == "openai":
                 self._providers[provider_type] = OpenAIProvider(config)
             elif provider_type == "gemini":
                 self._providers[provider_type] = GeminiProvider(config)
             elif provider_type == "perplexity":
                 self._providers[provider_type] = PerplexityProvider(config)
+            # CLI providers
+            elif provider_type == "claude-cli":
+                self._providers[provider_type] = ClaudeCliProvider(config)
+            elif provider_type == "openai-cli":
+                self._providers[provider_type] = OpenAICliProvider(config)
+            elif provider_type == "gemini-cli":
+                self._providers[provider_type] = GeminiCliProvider(config)
+            elif provider_type == "perplexity-cli":
+                self._providers[provider_type] = PerplexityCliProvider(config)
             else:
                 raise ValueError(f"Unknown provider type: {provider_type}")
 

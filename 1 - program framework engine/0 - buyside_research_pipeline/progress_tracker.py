@@ -6,10 +6,11 @@ Provides:
 - Cost tracking per phase
 - Iteration summaries
 - Final pipeline summary
+- Optional dashboard event emission via ProgressEmitter
 """
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, TYPE_CHECKING
 from enum import Enum
 
 try:
@@ -17,6 +18,9 @@ try:
     TQDM_AVAILABLE = True
 except ImportError:
     TQDM_AVAILABLE = False
+
+if TYPE_CHECKING:
+    from dashboard.emitter import ProgressEmitter
 
 
 class PhaseType(Enum):
@@ -47,12 +51,14 @@ class ProgressTracker:
         num_analysts: int = 6,
         provider_factory: Any = None,
         log_file: Optional[str] = None,
+        emitter: Optional["ProgressEmitter"] = None,
     ):
         self.ticker = ticker
         self.num_iterations = num_iterations
         self.num_analysts = num_analysts
         self.provider_factory = provider_factory
         self.log_file = log_file
+        self.emitter = emitter
         self.current_iteration = 0
         self.phases: Dict[str, PhaseStats] = {}
         self.iteration_summaries: list = []
@@ -60,8 +66,18 @@ class ProgressTracker:
         self._iteration_bar = None
         self._phase_bar = None
 
+    def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Emit an event to the dashboard if emitter is available."""
+        if self.emitter:
+            self.emitter.emit(event_type, data)
+
     def start_pipeline(self) -> None:
         """Initialize pipeline progress tracking."""
+        self._emit("pipeline_started", {
+            "ticker": self.ticker,
+            "iterations": self.num_iterations,
+        })
+
         if TQDM_AVAILABLE:
             self._iteration_bar = tqdm(
                 total=self.num_iterations + 1,  # +1 for genesis scout
@@ -75,11 +91,37 @@ class ProgressTracker:
             print(f"{self.ticker} Pipeline Starting")
             print(f"{'='*60}")
 
-    def end_pipeline(self, state: Any) -> None:
-        """Finalize pipeline and print summary."""
+    def end_pipeline(self, state: Any, pdf_paths: dict = None) -> None:
+        """Finalize pipeline and print summary.
+
+        Args:
+            state: Pipeline state
+            pdf_paths: Optional dict with PDF paths (pdf_en, pdf_cn) for dashboard
+        """
         if self._iteration_bar and TQDM_AVAILABLE:
             self._iteration_bar.close()
         self._print_final_summary(state)
+
+        # Emit completion event
+        if hasattr(state, 'is_failed') and state.is_failed:
+            self._emit("pipeline_failed", {
+                "error": getattr(state, 'error', 'Unknown error'),
+            })
+        else:
+            total_tokens = 0
+            if hasattr(state, 'total_token_usage'):
+                total_tokens = state.total_token_usage.total_tokens
+
+            event_data = {
+                "total_tokens": total_tokens,
+                "total_cost": self.total_cost,
+            }
+
+            # Include PDF paths for dashboard to show clickable links
+            if pdf_paths:
+                event_data.update(pdf_paths)
+
+            self._emit("pipeline_completed", event_data)
 
     def start_genesis(self) -> None:
         """Mark genesis phase start."""
@@ -95,6 +137,10 @@ class ProgressTracker:
     def start_iteration(self, iteration: int) -> None:
         """Mark iteration start."""
         self.current_iteration = iteration
+        self._emit("iteration_started", {
+            "iteration": iteration,
+            "phase": "debate" if iteration > 1 else "genesis",
+        })
         if self._iteration_bar and TQDM_AVAILABLE:
             self._iteration_bar.set_description(f"{self.ticker} Iter {iteration}")
 
@@ -103,6 +149,16 @@ class ProgressTracker:
         summary = self._generate_iteration_summary(iteration_state)
         self.iteration_summaries.append(summary)
         print(f"\n{summary}\n")
+
+        # Emit iteration completed event
+        tokens = 0
+        if hasattr(iteration_state, 'total_token_usage'):
+            tokens = iteration_state.total_token_usage.total_tokens
+        self._emit("iteration_completed", {
+            "iteration": iteration_state.iteration if hasattr(iteration_state, 'iteration') else self.current_iteration,
+            "tokens": tokens,
+        })
+
         if self._iteration_bar and TQDM_AVAILABLE:
             self._iteration_bar.update(1)
 
@@ -174,6 +230,64 @@ class ProgressTracker:
         """Update phase progress bar."""
         if self._phase_bar and TQDM_AVAILABLE:
             self._phase_bar.update(completed)
+
+    # Dashboard event methods
+    def emit_agent_started(self, role: str, type_id: int, name: str) -> None:
+        """Emit agent started event."""
+        self._emit("agent_started", {
+            "role": role,
+            "type_id": type_id,
+            "name": name,
+        })
+
+    def emit_agent_completed(
+        self,
+        role: str,
+        type_id: int,
+        tokens: int,
+        success: bool = True
+    ) -> None:
+        """Emit agent completed event."""
+        self._emit("agent_completed", {
+            "role": role,
+            "type_id": type_id,
+            "tokens": tokens,
+            "success": success,
+        })
+
+    def emit_agent_failed(self, role: str, type_id: int, error: str) -> None:
+        """Emit agent failed event."""
+        self._emit("agent_failed", {
+            "role": role,
+            "type_id": type_id,
+            "error": error,
+        })
+
+    def emit_cost_update(
+        self,
+        claude_cli: float = 0.0,
+        openai: float = 0.0,
+        gemini: float = 0.0,
+    ) -> None:
+        """Emit cost update event."""
+        total = claude_cli + openai + gemini
+        self._emit("cost_updated", {
+            "claude_cli": claude_cli,
+            "openai": openai,
+            "gemini": gemini,
+            "total": total,
+        })
+
+    def emit_source_updated(self, new_citations: int) -> None:
+        """Emit source file updated event."""
+        self._emit("source_updated", {"new_citations": new_citations})
+
+    def emit_thesis_summary(self, iteration: int, summary: str) -> None:
+        """Emit thesis evolution summary."""
+        self._emit("thesis_updated", {
+            "iteration": iteration,
+            "summary": summary,
+        })
 
     def _generate_iteration_summary(self, state: Any) -> str:
         """Generate 1-paragraph summary of iteration."""

@@ -682,3 +682,62 @@ Example of correct output format:
         """Get all key debates from the source file."""
         data = self.load_source_file()
         return data.get("research_context", {}).get("key_debates", [])
+
+    def get_analyst_summaries(self) -> Optional[Dict[str, Any]]:
+        """
+        Load current analyst_summaries from webSource.json.
+
+        Returns:
+            Dict containing iteration, last_updated, and summaries list,
+            or None if not present.
+        """
+        data = self.load_source_file()
+        return data.get("research_context", {}).get("analyst_summaries")
+
+    def update_analyst_summaries(
+        self,
+        summaries: List[Dict[str, Any]],
+        iteration: int,
+    ) -> bool:
+        """
+        Update analyst_summaries section in webSource.json.
+
+        This replaces all summaries for the current iteration
+        (summaries are not appended across iterations).
+
+        Args:
+            summaries: List of analyst summary dicts with keys:
+                       type_id, type_name, position, target_price, summary
+            iteration: Current pipeline iteration (1-5)
+
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        try:
+            data = self.load_source_file()
+
+            # Ensure research_context exists
+            if "research_context" not in data:
+                data["research_context"] = {
+                    "thesis_points": [],
+                    "key_debates": [],
+                    "research_iterations": [],
+                }
+
+            # Update analyst_summaries section
+            data["research_context"]["analyst_summaries"] = {
+                "iteration": iteration,
+                "last_updated": datetime.now().isoformat(),
+                "summaries": summaries,
+            }
+
+            self.save_source_file(data)
+            logger.info(
+                f"Updated analyst_summaries: {len(summaries)} summaries "
+                f"for iteration {iteration}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to update analyst_summaries: {e}")
+            return False

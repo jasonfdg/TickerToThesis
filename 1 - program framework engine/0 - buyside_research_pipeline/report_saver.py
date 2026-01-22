@@ -194,6 +194,33 @@ generated: {report.timestamp.strftime('%Y-%m-%d')}
         logger.info(f"Saved final memo ({lang}): {filepath}")
         return filepath
 
+    def save_synthesis(self, report: AgentReport) -> Path:
+        """
+        Save the synthesis report.
+
+        Args:
+            report: The synthesis AgentReport
+
+        Returns:
+            Path to the saved file
+        """
+        filepath = self.interim_dir / f"{self.ticker}_synthesis_raw.md"
+
+        header = f"""---
+ticker: {self.ticker}
+stage: synthesis
+timestamp: {report.timestamp.isoformat()}
+tokens_in: {report.token_usage.input_tokens}
+tokens_out: {report.token_usage.output_tokens}
+---
+
+"""
+        content = header + report.content
+
+        filepath.write_text(content, encoding="utf-8")
+        logger.info(f"Saved synthesis: {filepath}")
+        return filepath
+
     def save_source_scout(self, report: AgentReport, iteration: int) -> Path:
         """
         Save the web research report for an iteration.

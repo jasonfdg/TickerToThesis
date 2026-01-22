@@ -1,7 +1,8 @@
 """
 Memo Translator
 ===============
-Translates investment memos to Chinese using Claude with finance-aware prompting.
+Translates investment memos to Chinese using GPT-4o or Claude with finance-aware prompting.
+GPT-4o is the default for superior Chinese translation quality.
 """
 
 import asyncio
@@ -10,9 +11,10 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 
 import anthropic
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -110,33 +112,48 @@ Output ONLY the translated document. Do not include any explanation or commentar
 
 
 class MemoTranslator:
-    """Translates investment memos using Claude API."""
+    """Translates investment memos using GPT-4o (default) or Claude API.
 
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    GPT-4o is recommended for Chinese translation due to superior quality.
+    """
+
+    DEFAULT_PROVIDER = "openai"  # GPT-4o for best Chinese quality
+    DEFAULT_MODEL_OPENAI = "gpt-4o"
+    DEFAULT_MODEL_CLAUDE = "claude-sonnet-4-20250514"
 
     def __init__(
         self,
+        provider: Literal["openai", "claude"] = DEFAULT_PROVIDER,
         api_key: Optional[str] = None,
-        model: str = DEFAULT_MODEL,
+        model: Optional[str] = None,
         max_tokens: int = 16000,
         timeout: float = 300.0,
     ):
         """Initialize the translator.
 
         Args:
-            api_key: Anthropic API key. If None, uses ANTHROPIC_API_KEY env var.
-            model: Claude model to use for translation.
+            provider: "openai" (GPT-4o, recommended) or "claude".
+            api_key: API key. If None, uses env var (OPENAI_API_KEY or ANTHROPIC_API_KEY).
+            model: Model to use. If None, uses provider default.
             max_tokens: Maximum output tokens.
             timeout: Request timeout in seconds.
         """
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not self.api_key:
-            raise ValueError("ANTHROPIC_API_KEY not found in environment")
-
-        self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
-        self.model = model
+        self.provider = provider
         self.max_tokens = max_tokens
         self.timeout = timeout
+
+        if provider == "openai":
+            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+            if not self.api_key:
+                raise ValueError("OPENAI_API_KEY not found in environment")
+            self.client = AsyncOpenAI(api_key=self.api_key)
+            self.model = model or self.DEFAULT_MODEL_OPENAI
+        else:
+            self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+            if not self.api_key:
+                raise ValueError("ANTHROPIC_API_KEY not found in environment")
+            self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
+            self.model = model or self.DEFAULT_MODEL_CLAUDE
 
     async def translate(
         self,
@@ -161,53 +178,81 @@ class MemoTranslator:
 {content}"""
 
         try:
-            response = await asyncio.wait_for(
-                self.client.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    temperature=0.3,  # Lower temperature for consistency
-                    system=[{
-                        "type": "text",
-                        "text": TRANSLATION_SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"}
-                    }],
-                    messages=[{"role": "user", "content": user_prompt}],
-                ),
-                timeout=self.timeout,
-            )
+            if self.provider == "openai":
+                return await self._translate_openai(user_prompt)
+            else:
+                return await self._translate_claude(user_prompt)
 
-            # Extract content
-            translated = ""
-            for block in response.content:
-                if hasattr(block, "text"):
-                    translated += block.text
-
-            input_tokens = response.usage.input_tokens
-            output_tokens = response.usage.output_tokens
-
-            # Log cache metrics
-            cache_read = getattr(response.usage, "cache_read_input_tokens", 0)
-            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0)
-            if cache_read > 0:
-                logger.info(f"Translation cache HIT: {cache_read:,} tokens")
-            if cache_write > 0:
-                logger.debug(f"Translation cache WRITE: {cache_write:,} tokens")
-
-            logger.info(
-                f"Translation complete: {input_tokens:,} in / {output_tokens:,} out"
-            )
-
-            return translated, input_tokens, output_tokens
-
-        except anthropic.RateLimitError as e:
-            logger.error(f"Rate limit hit during translation: {e}")
-            raise
         except asyncio.TimeoutError:
             logger.error(f"Translation timed out after {self.timeout}s")
             raise
-        except anthropic.APIError as e:
-            logger.error(f"API error during translation: {e}")
+        except Exception as e:
+            logger.error(f"Translation error: {e}")
             raise
+
+    async def _translate_openai(self, user_prompt: str) -> tuple[str, int, int]:
+        """Translate using OpenAI GPT-4o."""
+        response = await asyncio.wait_for(
+            self.client.chat.completions.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                temperature=0.3,
+                messages=[
+                    {"role": "system", "content": TRANSLATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+            ),
+            timeout=self.timeout,
+        )
+
+        translated = response.choices[0].message.content or ""
+        input_tokens = response.usage.prompt_tokens
+        output_tokens = response.usage.completion_tokens
+
+        logger.info(
+            f"Translation complete (GPT-4o): {input_tokens:,} in / {output_tokens:,} out"
+        )
+
+        return translated, input_tokens, output_tokens
+
+    async def _translate_claude(self, user_prompt: str) -> tuple[str, int, int]:
+        """Translate using Claude."""
+        response = await asyncio.wait_for(
+            self.client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                temperature=0.3,
+                system=[{
+                    "type": "text",
+                    "text": TRANSLATION_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"}
+                }],
+                messages=[{"role": "user", "content": user_prompt}],
+            ),
+            timeout=self.timeout,
+        )
+
+        translated = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                translated += block.text
+
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+
+        # Log cache metrics
+        cache_read = getattr(response.usage, "cache_read_input_tokens", 0)
+        cache_write = getattr(response.usage, "cache_creation_input_tokens", 0)
+        if cache_read > 0:
+            logger.info(f"Translation cache HIT: {cache_read:,} tokens")
+        if cache_write > 0:
+            logger.debug(f"Translation cache WRITE: {cache_write:,} tokens")
+
+        logger.info(
+            f"Translation complete (Claude): {input_tokens:,} in / {output_tokens:,} out"
+        )
+
+        return translated, input_tokens, output_tokens
 
     async def translate_memo(
         self,
@@ -273,7 +318,7 @@ async def translate_memo(
     memo_path: Path,
     output_path: Optional[Path] = None,
     target_lang: str = "zh-CN",
-    model: str = MemoTranslator.DEFAULT_MODEL,
+    model: str = MemoTranslator.DEFAULT_MODEL_CLAUDE,
 ) -> TranslationResult:
     """Convenience function to translate a memo file.
 

@@ -1,24 +1,9 @@
 /* Chinese Investment Memo Stylesheet */
 /* Professional buyside research - Simplified Chinese */
 /* Based on institutional hedge fund formatting standards */
+/* Uses system fonts (PingFang SC on macOS) via fontconfig */
 
 @charset "UTF-8";
-
-/* ===== WEB FONTS ===== */
-/* Noto Sans SC from Google Fonts - enables reliable CJK rendering in WeasyPrint */
-@font-face {
-    font-family: "Noto Sans SC";
-    src: url('https://fonts.gstatic.com/s/notosanssc/v36/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYw.woff2') format('woff2');
-    font-weight: 400;
-    font-style: normal;
-}
-
-@font-face {
-    font-family: "Noto Sans SC";
-    src: url('https://fonts.gstatic.com/s/notosanssc/v36/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_EnYwxBtA.woff2') format('woff2');
-    font-weight: 700;
-    font-style: normal;
-}
 
 /* ===== PAGE SETUP ===== */
 @page {
@@ -26,7 +11,7 @@
     margin: 1.5cm 1.5cm;
     @top-right {
         content: counter(page);
-        font-family: "Noto Sans SC", sans-serif;
+        font-family: "Noto Sans CJK SC", "PingFang SC", sans-serif;
         font-size: 9pt;
         color: #666;
     }
@@ -39,15 +24,14 @@
 }
 
 /* ===== BASE TYPOGRAPHY ===== */
+/* Noto Sans CJK SC installed via brew, accessible via fontconfig */
 body {
-    font-family: "Noto Sans SC", sans-serif;
+    font-family: "Noto Sans CJK SC", "Noto Sans CJK SC", "PingFang SC", sans-serif;
     font-size: 9pt;
     line-height: 1.4;
     color: #1a1a1a;
     margin: 0;
     padding: 0;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
 }
 
 /* Container */
@@ -59,9 +43,9 @@ body {
 
 /* ===== HEADERS ===== */
 h1 {
-    font-family: "Noto Sans SC", sans-serif;
+    font-family: "Noto Sans CJK SC", "PingFang SC", sans-serif;
     font-size: 16pt;
-    font-weight: 700;
+    font-weight: 600;
     color: #1a1a1a;
     margin: 0 0 0.4em 0;
     padding-bottom: 0.2em;
@@ -69,9 +53,9 @@ h1 {
 }
 
 h2 {
-    font-family: "Noto Sans SC", sans-serif;
+    font-family: "Noto Sans CJK SC", "PingFang SC", sans-serif;
     font-size: 11pt;
-    font-weight: 700;
+    font-weight: 600;
     color: #1a1a1a;
     margin: 1em 0 0.3em 0;
     padding-bottom: 0.15em;
@@ -79,17 +63,17 @@ h2 {
 }
 
 h3 {
-    font-family: "Noto Sans SC", sans-serif;
+    font-family: "Noto Sans CJK SC", "PingFang SC", sans-serif;
     font-size: 10pt;
-    font-weight: 700;
+    font-weight: 600;
     color: #2a2a2a;
     margin: 0.8em 0 0.25em 0;
 }
 
 h4 {
-    font-family: "Noto Sans SC", sans-serif;
+    font-family: "Noto Sans CJK SC", "PingFang SC", sans-serif;
     font-size: 9pt;
-    font-weight: 700;
+    font-weight: 600;
     color: #333;
     margin: 0.6em 0 0.2em 0;
 }
@@ -98,7 +82,6 @@ h4 {
 p {
     margin: 0 0 0.5em 0;
     text-align: justify;
-    text-justify: inter-ideograph;
 }
 
 /* First paragraph after h1 - Executive Summary styling */
@@ -114,7 +97,7 @@ h1 + p {
 
 /* ===== TEXT STYLING ===== */
 strong {
-    font-weight: 700;
+    font-weight: 600;
     color: #1a1a1a;
 }
 
@@ -168,8 +151,8 @@ thead {
 }
 
 th {
-    font-family: "Noto Sans SC", sans-serif;
-    font-weight: 700;
+    font-family: "Noto Sans CJK SC", "PingFang SC", sans-serif;
+    font-weight: 600;
     font-size: 9pt;
     padding: 10px 12px;
     text-align: left;
@@ -205,10 +188,17 @@ th:first-child {
 
 tbody tr:nth-child(odd) {
     background-color: #ffffff;
+    color: #1a1a1a;
 }
 
 tbody tr:nth-child(even) {
     background-color: #f8f9fa;
+    color: #1a1a1a;
+}
+
+/* Ensure table cells always have readable text color */
+td {
+    color: #1a1a1a;
 }
 
 /* ===== BLOCKQUOTES ===== */
@@ -248,7 +238,6 @@ pre {
     padding: 1em 1.2em;
     border: 1px solid #e0e0e0;
     border-radius: 4px;
-    overflow-x: auto;
     white-space: pre-wrap;
     word-wrap: break-word;
     line-height: 1.5;
@@ -293,7 +282,7 @@ hr {
 
 .key-metric {
     font-size: 13pt;
-    font-weight: 700;
+    font-weight: 600;
     color: #1a1a1a;
 }
 
@@ -341,17 +330,35 @@ h2, h3, h4 {
     page-break-after: avoid;
 }
 
-/* Sources list - smaller text */
+/* ===== SOURCES SECTION ===== */
+/* Sources section - smaller text for bullet list following Sources header */
+/* This targets the list that comes after the Sources h2 header */
+
+/* Style lists that appear at the end of the memo (typically Sources) */
 .memo > ul:last-of-type,
 .memo ul:last-child {
-    font-size: 8pt;
-    color: #666;
-    line-height: 1.4;
+    font-size: 7.5pt;
+    color: #444;
+    line-height: 1.5;
+    margin-top: 0.5em;
 }
 
 .memo > ul:last-of-type li,
 .memo ul:last-child li {
-    margin-bottom: 0.2em;
+    margin-bottom: 0.4em;
+    text-align: left;
+}
+
+.memo > ul:last-of-type a,
+.memo ul:last-child a {
+    color: #0056b3;
+    text-decoration: underline;
+    font-weight: 500;
+}
+
+.memo > ul:last-of-type a:hover,
+.memo ul:last-child a:hover {
+    color: #003d82;
 }
 
 /* ===== PRINT OPTIMIZATION ===== */

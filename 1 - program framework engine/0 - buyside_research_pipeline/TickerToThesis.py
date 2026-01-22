@@ -879,8 +879,10 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
             Concise summary of current investment debates for the ticker.
         """
         query = (
-            f"What are the current bull and bear cases for {self.ticker}? "
-            f"What are the key debates among investors?"
+            f"What are the key investment debates for {self.ticker}? "
+            f"Specifically: (1) What transformative forces (AI, robotics, Web3, or other) most impact this company? "
+            f"(2) What strategic pivots or hidden optionality might the market be missing? "
+            f"(3) What's the most controversial bull and bear case?"
         )
 
         logger.info("Bootstrapping thesis via Perplexity search...")
@@ -890,9 +892,14 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
                 AgentCall(
                     role=AgentRole.SOURCE_SCOUT,
                     system_prompt=(
-                        "You are a research assistant. Summarize the key investment "
-                        "debates concisely in 2-3 paragraphs. Focus on: (1) main bull "
-                        "thesis, (2) main bear thesis, (3) key unresolved debates."
+                        "You are a buyside research analyst. Find the BIG STORY - the single most "
+                        "transformative force acting on this company over the next 3-5 years. "
+                        "Focus on:\n"
+                        "1. TRANSFORMATIVE FORCES: Consider AI, robotics, Web3, regulatory shifts, or other "
+                        "paradigm changes. Is this an existential threat to the moat, or a transformative opportunity?\n"
+                        "2. STRATEGIC PIVOTS: Is management making a bold bet the market undervalues?\n"
+                        "3. VARIANT VIEW: What does the market believe that might be wrong?\n\n"
+                        "Be specific and narrative-driven. Surface debates, not just facts."
                     ),
                     user_prompt=query,
                     provider="perplexity",

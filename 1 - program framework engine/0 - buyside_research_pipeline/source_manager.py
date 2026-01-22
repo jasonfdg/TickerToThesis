@@ -411,8 +411,11 @@ class SourceManager:
             src_type = s.get("type", "unknown")
             src_url = s.get("url", "")
 
+            # ALWAYS include stock_data with full structured_data (financial baseline)
+            if src_type == "stock_data":
+                filtered_sources.append(s)  # Full source, not slim
             # Include if type matches OR previously cited by this analyst
-            if src_type in source_types or src_url in previously_cited:
+            elif src_type in source_types or src_url in previously_cited:
                 filtered_sources.append({
                     "id": s["id"],
                     "type": src_type,
@@ -616,6 +619,58 @@ Example of correct output format:
         """Check if the source file has any sources."""
         data = self.load_source_file()
         return len(data.get("sources", [])) > 0
+
+    def add_source(self, source_entry: Dict[str, Any]) -> bool:
+        """
+        Add a single source entry to the source file.
+
+        Args:
+            source_entry: Dict with url, title, summary, etc.
+
+        Returns:
+            True if added successfully
+        """
+        try:
+            # Load current sources
+            sources = self.load_source_file()
+
+            # Check for duplicate URL
+            existing_urls = {
+                self._normalize_url(s.get("url", ""))
+                for s in sources.get("sources", [])
+            }
+            if self._normalize_url(source_entry.get("url", "")) in existing_urls:
+                logger.debug(f"Source already exists: {source_entry.get('url')}")
+                return False
+
+            # Find max source ID
+            max_id = 0
+            for src in sources.get("sources", []):
+                if src.get("id", "").startswith("src_"):
+                    try:
+                        num = int(src["id"].replace("src_", ""))
+                        max_id = max(max_id, num)
+                    except ValueError:
+                        pass
+
+            # Assign ID to new source
+            max_id += 1
+            source_entry["id"] = f"src_{max_id:03d}"
+            source_entry["added_at"] = datetime.now().isoformat()
+
+            # Add to sources list
+            if "sources" not in sources:
+                sources["sources"] = []
+            sources["sources"].insert(0, source_entry)  # Add at beginning
+
+            # Save
+            self.save_source_file(sources)
+            logger.info(f"Added source: {source_entry.get('title', 'Unknown')}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to add source: {e}")
+            return False
 
     def log_research_iteration(
         self,

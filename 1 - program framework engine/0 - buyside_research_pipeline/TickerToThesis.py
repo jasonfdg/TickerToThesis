@@ -11,6 +11,8 @@ Usage:
     python TickerToThesis.py AAPL "preliminary thinking about the company..."
     python TickerToThesis.py --ticker AAPL --thinking "preliminary thinking..."
     python TickerToThesis.py AAPL "thinking..." --no-gui  # Disable dashboard
+    python TickerToThesis.py AAPL ""  # Bootstrap generates thesis automatically
+    python TickerToThesis.py AAPL     # Same as above (empty thesis)
 """
 
 import argparse
@@ -45,7 +47,7 @@ for _env_path in _env_locations:
 try:
     from .agent_runner import AgentCall, AgentRunner, MultiProviderRunner
     from .citation_extractor import CitationExtractor, extract_citations_from_reports
-    from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache
+    from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache, set_pipeline_mode
     from .models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from .prompt_loader import PromptLoader
     from .progress_tracker import ProgressTracker, PhaseType
@@ -55,7 +57,7 @@ try:
 except ImportError:
     from agent_runner import AgentCall, AgentRunner, MultiProviderRunner
     from citation_extractor import CitationExtractor, extract_citations_from_reports
-    from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache
+    from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache, set_pipeline_mode
     from models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from prompt_loader import PromptLoader
     from progress_tracker import ProgressTracker, PhaseType
@@ -487,8 +489,17 @@ Your job is to sharpen, not to kill. Make this analyst better.
 {self.prompt_loader.memo_engine}
 """
 
-    def _build_rd_synthesis_user_prompt(self, all_v5_reports: Dict[int, str]) -> str:
-        """Build the user prompt for final RD synthesis."""
+    def _build_rd_synthesis_user_prompt(
+        self,
+        all_v5_reports: Dict[int, str],
+        debate_summary: Optional[str] = None,
+    ) -> str:
+        """Build the user prompt for final RD synthesis.
+
+        Args:
+            all_v5_reports: Dict mapping analyst type_id to their final report content
+            debate_summary: Pre-extracted analyst positions and debates (if available)
+        """
         reports_section = ""
         for type_id in range(1, 7):
             if type_id in all_v5_reports:
@@ -502,10 +513,47 @@ Your job is to sharpen, not to kill. Make this analyst better.
 
         source_content = self.source_manager.get_source_content()
 
+        # Build the debate accountability section
+        debate_section = ""
+        if debate_summary:
+            debate_section = f"""
+---
+
+## ⚠️ ANALYST POSITIONS & DEBATES (YOU MUST ADDRESS THESE)
+
+The following positions and debates were extracted from the analyst reports above.
+You MUST address each key debate in your synthesis.
+
+{debate_summary}
+
+---
+
+### CRITICAL ACCOUNTABILITY RULES
+
+1. **Majority Override Requires Justification**: If your final recommendation (LONG/SHORT/PASS)
+   differs from the majority of analysts, you MUST include a section titled
+   **"Why the [Bears/Bulls] Are Wrong"** with specific refutations of their arguments.
+
+2. **Key Analytical Tensions**: Your "Key Analytical Tensions" section MUST include
+   the top 3 debates from the summary above. You may NOT substitute different tensions
+   that better fit your conclusion.
+
+3. **No Silent Disagreement**: You cannot ignore a debate where 3+ analysts flagged a concern.
+   Address it explicitly with evidence, even if you conclude it's not material.
+
+4. **Contrarian Flags**: If any contrarian flag was identified above, explain why that
+   analyst's view is either correct (and the majority is wrong) or incorrect.
+
+---
+
+"""
+
         return f"""## Task: Synthesize Final Investment View on {self.ticker}
 
 You have received final reports from 6 analysts, each with a distinct investing philosophy.
 Your job is to synthesize these into a single, decision-grade investment memo.
+{debate_section}
+### Full Analyst Reports
 
 {reports_section}
 
@@ -515,14 +563,126 @@ Your job is to synthesize these into a single, decision-grade investment memo.
 ```
 
 ### Instructions
-1. Identify the central tension across reports - where do they agree? Disagree?
-2. Determine which assumptions are defensible
-3. Form YOUR final view - don't split the difference
-4. Articulate the variant perception: What does the market believe? Why are they wrong?
-5. Rank your conviction: Is this "high conviction" or "worth monitoring"?
-6. Include complete Sources Used table
+1. **Address the extracted debates first** - Do not skip any debate from the summary above
+2. Identify the central tension across reports - where do they agree? Disagree?
+3. Determine which assumptions are defensible
+4. Form YOUR final view - don't split the difference
+5. Articulate the variant perception: What does the market believe? Why are they wrong?
+6. Rank your conviction: Is this "high conviction" or "worth monitoring"?
+7. Include complete Sources Used table
 
 Remember: If your conclusion is consensus, you've added nothing.
+But also: If your conclusion contradicts the majority without explanation, you've avoided the hard work.
+"""
+
+    async def _extract_analyst_positions(self, all_v5_reports: Dict[int, str]) -> str:
+        """Extract analyst recommendations and key debates before synthesis.
+
+        This forces the synthesis to acknowledge and address disagreements rather
+        than picking whichever narrative is easiest to defend.
+
+        Args:
+            all_v5_reports: Dict mapping analyst type_id to their final report content
+
+        Returns:
+            Structured debate summary that synthesis MUST address
+        """
+        # Build the extraction prompt with all reports
+        reports_section = ""
+        for type_id in range(1, 7):
+            if type_id in all_v5_reports:
+                type_name = self.prompt_loader.investing_type_name(type_id)
+                reports_section += f"""
+### Analyst {type_id}: {type_name}
+{all_v5_reports[type_id]}
+
+---
+"""
+
+        extraction_prompt = f"""Analyze these 6 analyst reports on {self.ticker} and extract a structured summary of positions and debates.
+
+{reports_section}
+
+## Instructions
+
+Extract the following information in a structured format:
+
+### 1. RECOMMENDATION TALLY
+
+For each analyst (1-6), extract:
+| Analyst | Type | Recommendation | Target Price | Conviction | Primary Rationale |
+|---------|------|----------------|--------------|------------|-------------------|
+
+Where:
+- Recommendation: LONG / SHORT / PASS (be precise - if they say "avoid" or "sell" that's SHORT)
+- Target Price: Extract if given, otherwise "N/A"
+- Conviction: High / Medium / Low (infer from language)
+- Primary Rationale: 1 sentence summary of their main argument
+
+### 2. KEY DEBATES (rank by importance)
+
+Identify 3-5 substantive disagreements where analysts took opposing positions.
+For each debate, format as:
+
+**Debate #X: [The core question]**
+- **Bull Case:** Analyst(s) #X, #Y argue: [their position with evidence]
+- **Bear Case:** Analyst(s) #X, #Y argue: [their position with evidence]
+- **Vote Split:** X bulls vs Y bears vs Z neutral
+
+Focus on debates where analysts cite conflicting evidence or reach opposite conclusions from the same facts.
+
+### 3. CONSENSUS VIEWS
+
+List 2-3 things where most/all analysts agreed (to distinguish from debates).
+
+### 4. KILL CONDITIONS (2+ analysts mentioned)
+
+List specific kill conditions that appear in multiple analyst reports:
+- [Kill condition] — cited by Analysts #X, #Y
+- [Kill condition] — cited by Analysts #X, #Y, #Z
+
+Be specific and actionable (not generic like "revenue declines").
+
+### 5. CONTRARIAN FLAGS
+
+If any analyst has a view that directly contradicts the majority, flag it:
+- Analyst #X ({type_name}) recommends [X] while {count} others recommend [Y]. Their key argument: [summary]
+
+---
+
+Output this structured summary. The synthesis step MUST address each debate and explain its resolution with evidence.
+"""
+
+        # Use Haiku for speed and cost - this is a structured extraction task
+        call = AgentCall(
+            role=AgentRole.SOURCE_SUMMARY,  # Reuse role for extraction task
+            system_prompt="""You are an expert at extracting structured information from investment research reports.
+Your job is to identify recommendations, debates, and disagreements between analysts.
+Be precise about recommendations - if an analyst says "avoid", "sell", or expresses bearish conviction, that's a SHORT recommendation.
+Extract the exact evidence and reasoning each analyst uses.""",
+            user_prompt=extraction_prompt,
+            iteration=0,
+            identifier="analyst_position_extraction",
+            provider="claude",
+            model="haiku",  # Fast and cheap for extraction
+        )
+
+        extraction_report = await self.agent_runner.run_single(call)
+
+        if extraction_report.is_success:
+            logger.info(f"Extracted analyst positions: {extraction_report.token_usage.total_tokens:,} tokens")
+            return extraction_report.content
+        else:
+            logger.warning(f"Position extraction failed: {extraction_report.error}")
+            # Return a minimal fallback that still forces synthesis to consider disagreements
+            return """## Position Extraction Failed
+
+⚠️ Automated extraction failed. Synthesis MUST still:
+1. Manually identify the recommendation of each analyst (LONG/SHORT/PASS)
+2. Identify key disagreements between analysts
+3. If your final recommendation differs from the majority, explain why they are wrong
+
+Do NOT proceed without addressing analyst disagreements explicitly.
 """
 
     def _build_human_readable_system_prompt(self) -> str:
@@ -707,6 +867,49 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
 
         logger.warning(f"  Source file update from web research failed (iteration {iteration})")
         return False
+
+    async def _bootstrap_thesis(self) -> str:
+        """Quick search for bull/bear cases and key debates.
+
+        Runs a single Perplexity search at pipeline start to provide
+        market context. This augments the user's thesis (if provided)
+        or generates a starting thesis (if empty).
+
+        Returns:
+            Concise summary of current investment debates for the ticker.
+        """
+        query = (
+            f"What are the current bull and bear cases for {self.ticker}? "
+            f"What are the key debates among investors?"
+        )
+
+        logger.info("Bootstrapping thesis via Perplexity search...")
+
+        try:
+            result = await self.agent_runner.run_single(
+                AgentCall(
+                    role=AgentRole.SOURCE_SCOUT,
+                    system_prompt=(
+                        "You are a research assistant. Summarize the key investment "
+                        "debates concisely in 2-3 paragraphs. Focus on: (1) main bull "
+                        "thesis, (2) main bear thesis, (3) key unresolved debates."
+                    ),
+                    user_prompt=query,
+                    provider="perplexity",
+                    model="sonar",
+                )
+            )
+
+            if result.is_success:
+                logger.info(f"Thesis bootstrap complete: {result.token_usage.total_tokens:,} tokens")
+                return result.content
+            else:
+                logger.warning(f"Thesis bootstrap failed: {result.error}")
+                return ""
+
+        except Exception as e:
+            logger.warning(f"Thesis bootstrap exception: {e}")
+            return ""
 
     async def _run_initial_source_scout(self) -> None:
         """Run source scout to gather baseline data before iteration 1.
@@ -1009,6 +1212,11 @@ Output using Source Scout format with JSON source additions.
     async def _run_synthesis(self) -> None:
         """Run final synthesis: RD synthesizes all v5 reports.
 
+        Flow:
+        1. Load all v5 analyst reports
+        2. Extract analyst positions and key debates (forces accountability)
+        3. Run synthesis with debate summary injected (must address disagreements)
+
         Uses rd_synthesis_prompt_v2 which combines synthesis + polish in one pass.
         Gemini is used for this step (configured in ROLE_PROVIDER_CONFIG).
         The output is saved directly as the final memo - no separate polish step.
@@ -1027,11 +1235,23 @@ Output using Source Scout format with JSON source additions.
                 f"Need at least 4 final reports for synthesis, got {len(all_final_reports)}"
             )
 
-        # Run synthesis (uses Gemini via ROLE_PROVIDER_CONFIG)
+        # NEW: Extract analyst positions and debates before synthesis
+        # This forces the synthesis to acknowledge and address disagreements
+        logger.info("Extracting analyst positions and key debates...")
+        debate_summary = await self._extract_analyst_positions(all_final_reports)
+        logger.info(f"Debate summary extracted: {len(debate_summary)} chars")
+
+        # Save debate summary for debugging/audit
+        debate_path = self.report_saver.output_dir / "interim" / "debate_summary.md"
+        debate_path.parent.mkdir(parents=True, exist_ok=True)
+        debate_path.write_text(debate_summary, encoding="utf-8")
+        logger.info(f"Debate summary saved: {debate_path}")
+
+        # Run synthesis with debate summary (uses Gemini via ROLE_PROVIDER_CONFIG)
         call = AgentCall(
             role=AgentRole.RD_SYNTHESIS,
             system_prompt=self._build_rd_synthesis_system_prompt(),
-            user_prompt=self._build_rd_synthesis_user_prompt(all_final_reports),
+            user_prompt=self._build_rd_synthesis_user_prompt(all_final_reports, debate_summary),
             iteration=1,
         )
 
@@ -1342,6 +1562,23 @@ Output using Source Scout format with JSON source additions.
             prompt_stats = self.prompt_loader.load_all()
             logger.info(f"Loaded {len(prompt_stats)} prompts")
 
+            # Quick thesis bootstrap via Perplexity
+            bootstrap_context = await self._bootstrap_thesis()
+            if bootstrap_context:
+                if self.preliminary_thinking.strip():
+                    # Augment user's thesis with market context
+                    self.preliminary_thinking = (
+                        f"{self.preliminary_thinking}\n\n---\n\n"
+                        f"### Market Context\n{bootstrap_context}"
+                    )
+                    logger.info("Augmented user thesis with market context")
+                else:
+                    # Use bootstrap as the thesis
+                    self.preliminary_thinking = bootstrap_context
+                    logger.info("Using bootstrapped thesis (no user input)")
+                # Update state to reflect the enriched thesis
+                self.state.preliminary_thinking = self.preliminary_thinking
+
             # Run initial source scout to establish baseline data
             self.progress.start_genesis()
             await self._run_initial_source_scout()
@@ -1368,15 +1605,26 @@ Output using Source Scout format with JSON source additions.
             self.progress.end_phase(PhaseType.SYNTHESIS, synthesis_tokens, synthesis_cost)
 
             # Generate PDFs (EN + CN) after synthesis
-            await self._run_pdf_export()
+            export_results = await self._run_pdf_export()
+
+            # Extract PDF paths for dashboard
+            pdf_paths = {}
+            if export_results.get("pdf_en"):
+                pdf_paths["pdf_en"] = str(export_results["pdf_en"].output_path.relative_to(
+                    self.report_saver.output_dir.parent
+                ))
+            if export_results.get("pdf_zh"):
+                pdf_paths["pdf_cn"] = str(export_results["pdf_zh"].output_path.relative_to(
+                    self.report_saver.output_dir.parent
+                ))
 
             self.state.mark_completed()
 
             # Save final state
             self.report_saver.save_pipeline_state(self.state)
 
-            # Progress tracker final summary
-            self.progress.end_pipeline(self.state)
+            # Progress tracker final summary (include PDF paths for dashboard)
+            self.progress.end_pipeline(self.state, pdf_paths=pdf_paths)
 
             # Additional logging
             logger.info(f"Final memo (EN): {get_final_memo_path(self.ticker, 'EN')}")
@@ -1424,7 +1672,8 @@ Examples:
     parser.add_argument(
         "thinking",
         nargs="?",
-        help="Preliminary thinking about the company",
+        default="",
+        help="Preliminary thinking about the company (optional - bootstrap generates if empty)",
     )
     parser.add_argument(
         "--ticker",
@@ -1436,7 +1685,8 @@ Examples:
         "--thinking",
         "-p",
         dest="thinking_flag",
-        help="Preliminary thinking (alternative to positional)",
+        default="",
+        help="Preliminary thinking (optional - bootstrap generates if empty)",
     )
     parser.add_argument(
         "--model",
@@ -1467,17 +1717,21 @@ Examples:
         default=8765,
         help="Port for the dashboard server (default: 8765)",
     )
+    parser.add_argument(
+        "--light",
+        action="store_true",
+        help="Use light mode (gpt-4o-mini) for faster, cheaper analysis (~$0.20 vs ~$2.50/ticker)",
+    )
 
     args = parser.parse_args()
 
     # Resolve ticker and thinking from either positional or flag args
     ticker = args.ticker or args.ticker_flag
-    thinking = args.thinking or args.thinking_flag
+    # Use positional thinking if provided (even if empty), else fall back to flag
+    thinking = args.thinking if args.thinking is not None else (args.thinking_flag or "")
 
     if not ticker:
         parser.error("ticker is required (positional or --ticker)")
-    if not thinking:
-        parser.error("preliminary thinking is required (positional or --thinking)")
 
     # Handle API key (loaded from .env, environment, or CLI)
     api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -1496,8 +1750,21 @@ Examples:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # Create config
-    config = PipelineConfig(model=args.model, verbose=args.verbose)
+    # Determine pipeline mode
+    pipeline_mode = "light" if args.light else "full"
+
+    # Set global pipeline mode for path functions
+    set_pipeline_mode(pipeline_mode)
+
+    # Create config with pipeline mode
+    config = PipelineConfig(
+        model=args.model,
+        verbose=args.verbose,
+        pipeline_mode=pipeline_mode,
+    )
+
+    if args.light:
+        logger.info("Running in LIGHT MODE (gpt-4o-mini for most agents)")
 
     # Initialize dashboard if enabled
     emitter = None
@@ -1514,7 +1781,7 @@ Examples:
                 port=args.port,
                 open_browser=True,
             )
-            logger.info(f"Dashboard started at http://127.0.0.1:{args.port}")
+            logger.info(f"Dashboard started at http://127.0.0.1:{dashboard_server.port}")
         except ImportError as e:
             logger.warning(f"Dashboard not available: {e}")
             logger.info("Run with --no-gui to suppress this warning")

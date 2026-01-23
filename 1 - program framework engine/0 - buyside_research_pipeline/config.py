@@ -175,10 +175,10 @@ ROLE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
 # Exceptions: Perplexity for web search, Gemini for synthesis
 # Cost: ~$0.20/ticker vs ~$2.50/ticker for full mode
 LIGHT_MODE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
-    "analyst": {"provider": "openai", "model": "gpt-4o-mini"},
-    "rd_review": {"provider": "openai", "model": "gpt-4o-mini"},
-    "source_summary": {"provider": "openai", "model": "gpt-4o-mini"},
-    "human_readable": {"provider": "openai", "model": "gpt-4o-mini"},
+    "analyst": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "rd_review": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "source_summary": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    "human_readable": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
     # Keep these on premium providers:
     "source_scout": {"provider": "perplexity", "model": "sonar"},
     "rd_synthesis": {"provider": "gemini", "model": "gemini-2.5-pro"},

@@ -14,6 +14,8 @@ class PipelineDashboard {
             totalIterations: 5,
             totalTokens: 0,
             startedAt: null,
+            currentPhase: '',      // 'genesis', 'analysts', 'source_update', 'rd_reviews'
+            completedAgents: 0,    // Counter for agents completed in current phase
         };
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 10;
@@ -148,6 +150,14 @@ class PipelineDashboard {
             this.state.totalIterations = state.total_iterations;
         }
 
+        if (state.current_phase !== undefined) {
+            this.state.currentPhase = state.current_phase;
+        }
+
+        if (state.completed_agents !== undefined) {
+            this.state.completedAgents = state.completed_agents;
+        }
+
         if (state.total_tokens !== undefined) {
             this.state.totalTokens = state.total_tokens;
             this.elements.totalTokens.textContent = `Tokens: ${this.formatNumber(state.total_tokens)}`;
@@ -206,7 +216,9 @@ class PipelineDashboard {
                 break;
 
             case 'pipeline_completed':
+                this.state.status = 'completed';
                 this.updateStatus('completed');
+                this.updateProgress(); // Will now set to 100% and add completed class
                 this.addLog('Pipeline completed successfully!', 'success');
                 this.playChime();
                 this.showNotification('Pipeline Complete', `${this.state.ticker} analysis finished.`);
@@ -225,6 +237,7 @@ class PipelineDashboard {
             case 'iteration_started':
                 this.state.currentIteration = data.iteration;
                 this.state.currentPhase = data.phase || '';
+                this.state.completedAgents = 0; // Reset agent counter for new iteration/phase
                 this.updateProgress();
                 this.addLog(`Iteration ${data.iteration} started - ${data.phase || 'processing'}`);
                 this.resetAgentStatusesForIteration();
@@ -244,6 +257,11 @@ class PipelineDashboard {
                 this.updateAgentStatus(data.role, data.type_id, status);
                 this.state.totalTokens += data.tokens || 0;
                 this.elements.totalTokens.textContent = `Tokens: ${this.formatNumber(this.state.totalTokens)}`;
+                // Track agent completion for progress granularity
+                if (data.role === 'analyst' || data.role === 'rd_review') {
+                    this.state.completedAgents++;
+                    this.updateProgress();
+                }
                 this.addLog(
                     `${this.getAgentName(data.role, data.type_id)} completed (${this.formatNumber(data.tokens || 0)} tokens)`,
                     data.success ? 'success' : 'error'
@@ -264,6 +282,10 @@ class PipelineDashboard {
                 break;
 
             case 'source_updated':
+                // Source update phase complete - transition to rd_reviews
+                this.state.currentPhase = 'rd_reviews';
+                this.state.completedAgents = 0; // Reset for RD review phase
+                this.updateProgress();
                 this.addLog(`Source file updated with ${data.new_citations} new citations`, 'info');
                 break;
 
@@ -307,11 +329,58 @@ class PipelineDashboard {
     }
 
     updateProgress() {
-        const { currentIteration, totalIterations, currentPhase } = this.state;
+        const { currentIteration, totalIterations, currentPhase, status, completedAgents } = this.state;
 
-        // Progress is based on iterations (0 = genesis, 1-5 = debate iterations)
-        // Total phases: genesis + 5 iterations = 6 major phases
-        const progress = Math.min(100, (currentIteration / (totalIterations + 1)) * 100);
+        // Completion state - always 100%
+        if (status === 'completed') {
+            this.elements.progressFill.style.width = '100%';
+            this.elements.progressFill.classList.add('completed');
+            this.elements.progressLabel.textContent = 'Pipeline Complete ✓';
+            return;
+        }
+
+        // Remove completed class if not completed (for restart scenarios)
+        this.elements.progressFill.classList.remove('completed');
+
+        let progress = 0;
+
+        // Progress breakdown:
+        // - Genesis: 0-10% (iteration 0)
+        // - Each of 5 iterations: 18% each (total 90%)
+        //   Within each iteration:
+        //   - Analysts (6 agents): 6% (1% per agent)
+        //   - Source update: 3%
+        //   - RD Reviews (6 agents): 6% (1% per RD)
+        //   - Buffer: 3%
+
+        if (currentIteration === 0) {
+            // Genesis phase: 0-10%
+            if (currentPhase === 'genesis' || currentPhase === '') {
+                progress = 5;
+            } else {
+                progress = 10;
+            }
+        } else {
+            // Base progress: 10% (genesis) + (iteration-1) * 18%
+            let base = 10 + (currentIteration - 1) * 18;
+
+            // Add phase progress within current iteration
+            if (currentPhase === 'analysts') {
+                // Analysts phase: 0-6% (1% per agent)
+                base += Math.min(6, (completedAgents / 6) * 6);
+            } else if (currentPhase === 'source_update') {
+                // Source update: analysts done (6%) + 1.5% (mid source)
+                base += 6 + 1.5;
+            } else if (currentPhase === 'rd_reviews') {
+                // RD reviews: analysts (6%) + source (3%) + RD progress
+                base += 9 + Math.min(6, (completedAgents / 6) * 6);
+            } else {
+                // Unknown phase or iteration complete - show full iteration
+                base += 15;
+            }
+
+            progress = Math.min(99, base);
+        }
 
         this.elements.progressFill.style.width = `${progress}%`;
 
@@ -321,7 +390,7 @@ class PipelineDashboard {
         }
 
         this.elements.progressLabel.textContent =
-            `Iteration ${currentIteration}/${totalIterations} \u2022 ${phaseLabel}`;
+            `Iteration ${currentIteration}/${totalIterations} • ${phaseLabel}`;
     }
 
     updateAgentStatus(role, typeId, status) {

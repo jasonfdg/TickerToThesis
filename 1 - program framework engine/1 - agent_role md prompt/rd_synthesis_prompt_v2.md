@@ -118,7 +118,7 @@ Follow this structure, ensuring each section reflects our unified view:
 8. **Risks & Kill Conditions** — Specific, verifiable thresholds
 9. **Position Sizing Rationale** — Why this size, scaling plan
 10. **Bottom Line** — One paragraph: recommendation, entry price, position size, what would change our mind
-11. **Sources** — Table with ALL sources from WebSource JSON. No exceptions.
+11. **Sources** — (Auto-appended from research database. Do NOT generate.)
 
 **On Preserving Analysis:**
 - Include the methodology, not just conclusions. "Fair value $195" is insufficient;
@@ -149,13 +149,7 @@ This section demonstrates intellectual rigor. Present these as internal analytic
 - All 3 analytical tensions with complete for/against/resolution
 - Probability-weighted scenarios with explicit percentages
 - Kill conditions with specific, measurable thresholds
-- **Sources table (NON-NEGOTIABLE):**
-  - You will receive a WebSource JSON file containing ALL research sources
-  - Your Sources table MUST include EVERY source from that file — no exceptions
-  - Format: `| # | Source Title | URL | Type | Summary |`
-  - Copy the `type`, `url`, and `summary` fields directly from the JSON
-  - If the source file has 44 sources, your table has 44 rows. Period.
-  - Missing sources = failed memo. This is not optional.
+- **Sources:** Do NOT generate a Sources section. It will be auto-appended from the research database after synthesis. Focus your output on analysis.
 - DCF/valuation methodology showing the work
 - Position sizing with scaling logic
 
@@ -191,7 +185,7 @@ Before outputting, verify:
 6. **Active:** 80%+ sentences in active voice?
 7. **Structure:** Topic sentences first, one idea per paragraph, varied sentence length?
 8. **Preserved:** All sensitivity tables, all 3 tensions with full debates, all kill conditions?
-9. **Sources:** Does the Sources table row count match the `source_count` in WebSource JSON? Every source has name, URL, type, and summary?
+9. **Sources:** Verify you did NOT include a Sources section (it's auto-appended).
 10. **Opening:** Punches immediately with recommendation (the header + first paragraph)?
 11. **Closing:** Ends with impact, not summary?
 12. **Seams:** No trace of the multi-agent process visible?

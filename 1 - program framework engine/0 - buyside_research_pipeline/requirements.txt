@@ -21,3 +21,6 @@ weasyprint>=60.0
 
 # HTTP client
 httpx>=0.26.0
+
+# Stock data
+yfinance>=0.2.36

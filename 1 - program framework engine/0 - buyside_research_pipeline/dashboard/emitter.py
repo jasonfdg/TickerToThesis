@@ -142,6 +142,7 @@ class ProgressEmitter:
         elif event_type == "iteration_started":
             state.current_iteration = data.get("iteration", 0)
             state.current_phase = data.get("phase", "")
+            state.completed_agents = 0  # Reset agent counter for new iteration/phase
 
         elif event_type == "iteration_completed":
             iteration = data.get("iteration", 0)
@@ -159,6 +160,9 @@ class ProgressEmitter:
             key = f"{role}_{type_id}"
             state.agent_status[key] = "completed" if data.get("success") else "failed"
             state.total_tokens += data.get("tokens", 0)
+            # Track agent completion for progress granularity
+            if role in ("analyst", "rd_review"):
+                state.completed_agents += 1
 
         elif event_type == "agent_failed":
             role = data.get("role", "")
@@ -177,6 +181,9 @@ class ProgressEmitter:
 
         elif event_type == "source_updated":
             state.source_citations += data.get("new_citations", 0)
+            # Transition to rd_reviews phase and reset agent counter
+            state.current_phase = "rd_reviews"
+            state.completed_agents = 0
 
     def shutdown(self) -> None:
         """Shutdown the emitter and notify subscribers."""
@@ -203,6 +210,7 @@ class PipelineState:
     current_iteration: int = 0
     total_iterations: int = 5
     current_phase: str = ""
+    completed_agents: int = 0  # Counter for agents completed in current phase
 
     # Agent status: {role_typeId: status}
     agent_status: Dict[str, str] = field(default_factory=dict)
@@ -237,6 +245,7 @@ class PipelineState:
             "current_iteration": self.current_iteration,
             "total_iterations": self.total_iterations,
             "current_phase": self.current_phase,
+            "completed_agents": self.completed_agents,
             "agent_status": self.agent_status,
             "total_tokens": self.total_tokens,
             "iteration_tokens": self.iteration_tokens,

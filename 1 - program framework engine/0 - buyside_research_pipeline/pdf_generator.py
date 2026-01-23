@@ -121,7 +121,9 @@ class MemoPDFGenerator:
         them to smaller bullet points for better PDF readability.
         """
         # Find the Sources section (English or Chinese)
-        sources_pattern = r'(##\s*(?:Sources|资料来源|信息来源|来源)\s*\n+)((?:\|[^\n]*\n)+)'
+        # Pattern accounts for optional section numbering like "## 10. Sources"
+        # Final \n? handles last row without trailing newline
+        sources_pattern = r'(##\s*(?:\d+\.\s*)?(?:Sources|资料来源|信息来源|来源)\s*\n+)((?:\|[^\n]*\n?)+)'
 
         def convert_table(match):
             header = match.group(1)

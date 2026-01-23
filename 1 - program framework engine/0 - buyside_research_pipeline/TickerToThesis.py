@@ -297,7 +297,9 @@ class TickerToThesisPipeline:
         else:
             source_content = self.source_manager.get_source_content()
 
-        return f"""## Task: Initial Analysis of {self.ticker}
+        return f"""**Analysis Date: {datetime.now().strftime("%B %d, %Y")}**
+
+## Task: Initial Analysis of {self.ticker}
 
 ### Preliminary Thinking (from user)
 {self.preliminary_thinking}
@@ -332,7 +334,9 @@ This is iteration 1. Be bold. Form your initial view.
         else:
             source_content = self.source_manager.get_source_content()
 
-        return f"""## Task: Refine Your Analysis of {self.ticker} (Iteration {iteration})
+        return f"""**Analysis Date: {datetime.now().strftime("%B %d, %Y")}**
+
+## Task: Refine Your Analysis of {self.ticker} (Iteration {iteration})
 
 ### Your Previous Report (v{iteration - 1})
 {previous_report}
@@ -462,7 +466,9 @@ Complete this assessment:
 
 """
 
-        base_instructions = f"""## Task: Review {type_name} Analysis of {self.ticker} (Iteration {iteration})
+        base_instructions = f"""**Analysis Date: {datetime.now().strftime("%B %d, %Y")}**
+
+## Task: Review {type_name} Analysis of {self.ticker} (Iteration {iteration})
 {cross_analyst_section}
 ### Analyst Report
 {analyst_report}
@@ -646,7 +652,7 @@ Be specific and actionable (not generic like "revenue declines").
 ### 5. CONTRARIAN FLAGS
 
 If any analyst has a view that directly contradicts the majority, flag it:
-- Analyst #X ({type_name}) recommends [X] while {count} others recommend [Y]. Their key argument: [summary]
+- Analyst #X (TypeName) recommends [X] while N others recommend [Y]. Their key argument: [summary]
 
 ---
 
@@ -975,71 +981,52 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         return False
 
     async def _run_initial_source_scout(self) -> None:
-        """Run source scout to gather baseline data before iteration 1.
+        """Fetch baseline stock data using yfinance.
 
-        This establishes foundational data (price, filings, earnings, news)
-        so analysts don't hallucinate outdated information in iteration 1.
+        Replaces Perplexity API call with direct yfinance data fetch.
+        More reliable, consistent, and free.
         """
-        logger.info("Running initial source scout to establish baseline data...")
+        logger.info("Fetching baseline stock data via yfinance...")
 
-        system_prompt = self._build_source_scout_system_prompt()
-        user_prompt = f"""## Task: Initial Data Collection for {self.ticker}
+        from stock_data import StockData, fetch_stock_data
 
-### Company
-- **Ticker**: {self.ticker}
+        stock_data = fetch_stock_data(self.ticker)
 
-### User's Research Focus
-{self.preliminary_thinking}
+        if stock_data is None:
+            logger.warning(
+                f"yfinance fetch failed for {self.ticker}, skipping initial data"
+            )
+            return
 
-### Instructions
-Gather baseline data to ground analyst work:
-1. Current stock price, 52-week range, market cap
-2. Latest SEC filings (10-K, 10-Q dates, recent 8-Ks)
-3. Most recent earnings call date and key highlights
-4. Top 3-5 recent news items
-5. Analyst consensus (if available)
+        # Log key metrics
+        price_str = f"${stock_data.current_price:.2f}" if stock_data.current_price else "N/A"
+        range_str = (
+            f"${stock_data.fifty_two_week_low:.2f}-${stock_data.fifty_two_week_high:.2f}"
+            if stock_data.fifty_two_week_low and stock_data.fifty_two_week_high
+            else "N/A"
+        )
+        mcap_str = (
+            f"${stock_data.market_cap / 1e9:.1f}B"
+            if stock_data.market_cap
+            else "N/A"
+        )
+        logger.info(f"  {self.ticker}: {price_str} | 52wk: {range_str} | MCap: {mcap_str}")
 
-Output using Source Scout format with JSON source additions.
-"""
+        if stock_data.target_mean_price:
+            logger.info(
+                f"  Analyst target: ${stock_data.target_mean_price:.2f} "
+                f"({stock_data.recommendation_key or 'N/A'})"
+            )
 
-        # Use same fallback chain as regular source scout
-        fallback_providers = [
-            ("perplexity", "sonar"),
-            ("gemini", "gemini-2.0-flash"),
-            ("claude", "sonnet"),
-        ]
+        # Add to source file
+        source_entry = stock_data.to_source_json()
+        self.source_manager.add_source(source_entry)
 
-        for provider, model in fallback_providers:
-            try:
-                call = AgentCall(
-                    role=AgentRole.SOURCE_SCOUT,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    iteration=0,
-                    identifier=f"initial_scout_{provider}",
-                    provider=provider,
-                    model=model,
-                )
-                report = await self.agent_runner.run_single(call)
-
-                if report.is_success:
-                    logger.info(f"  Initial scout ({provider}): {report.token_usage.total_tokens:,} tokens")
-                    # Save the initial scout report
-                    self.report_saver.save_initial_scout(report)
-                    # Update source file with findings
-                    await self._update_sources_from_source_scout(report, 0)
-                    # Emit cost update for dashboard
-                    self._emit_cost_update()
-                    return
-                else:
-                    logger.warning(f"  Initial scout failed with {provider}: {report.error}")
-
-            except Exception as e:
-                logger.warning(f"  Initial scout exception with {provider}: {e}")
-                continue
-
-        logger.error("Initial source scout failed with all providers")
+        # Emit dashboard update
+        self.progress.emit_source_updated(new_citations=1)
         self._emit_cost_update()
+
+        logger.info("  Baseline stock data added to source file")
 
     async def _run_iteration_1(self) -> None:
         """Run iteration 1 (genesis): Initial analyst reports and RD reviews."""
@@ -1785,8 +1772,20 @@ Examples:
         action="store_true",
         help="Use light mode (gpt-4o-mini) for faster, cheaper analysis (~$0.20 vs ~$2.50/ticker)",
     )
+    parser.add_argument(
+        "--iterations",
+        "-i",
+        type=int,
+        default=5,
+        help="Number of debate iterations (5-10, default: 5)",
+    )
 
     args = parser.parse_args()
+
+    # Validate iterations (clamp to 5-10 range)
+    iterations = max(5, min(10, args.iterations))
+    if args.iterations != iterations:
+        logger.warning(f"Iterations clamped to {iterations} (requested: {args.iterations}, valid range: 5-10)")
 
     # Resolve ticker and thinking from either positional or flag args
     ticker = args.ticker or args.ticker_flag
@@ -1824,6 +1823,7 @@ Examples:
         model=args.model,
         verbose=args.verbose,
         pipeline_mode=pipeline_mode,
+        num_iterations=iterations,
     )
 
     if args.light:

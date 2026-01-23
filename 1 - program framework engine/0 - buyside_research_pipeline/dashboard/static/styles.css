@@ -191,6 +191,22 @@ body {
     100% { transform: translateX(50px); }
 }
 
+/* Completed progress bar */
+.progress-fill.completed {
+    background: linear-gradient(90deg, var(--green-dim), var(--green));
+    animation: celebrate 2s ease-in-out 3;
+}
+
+.progress-fill.completed::after {
+    animation: none;
+    background: transparent;
+}
+
+@keyframes celebrate {
+    0%, 100% { box-shadow: 0 0 20px rgba(0, 255, 136, 0.4); }
+    50% { box-shadow: 0 0 40px rgba(0, 255, 136, 0.6); }
+}
+
 .progress-label {
     font-size: 14px;
     color: var(--text-primary);

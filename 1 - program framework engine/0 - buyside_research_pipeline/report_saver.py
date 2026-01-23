@@ -167,9 +167,38 @@ tokens_out: {report.token_usage.output_tokens}
         logger.info(f"Saved initial scout: {filepath}")
         return filepath
 
+    def _format_sources_table(self) -> str:
+        """Format sources from webSource.json as markdown table for appending to memo."""
+        source_path = self.interim_dir / f"{self.ticker}_webSource.json"
+        if not source_path.exists():
+            logger.warning(f"webSource.json not found: {source_path}")
+            return ""
+
+        data = json.loads(source_path.read_text(encoding="utf-8"))
+        sources = data.get("sources", [])
+
+        if not sources:
+            return ""
+
+        lines = [
+            "\n\n## Sources\n",
+            "| # | Source Title | URL | Type | Summary |",
+            "|---|--------------|-----|------|---------|",
+        ]
+
+        for i, src in enumerate(sources, 1):
+            title = src.get("title", "Unknown").replace("|", "\\|")
+            url = src.get("url", "")
+            src_type = src.get("type", "unknown").replace("_", " ").title()
+            summary = src.get("summary", "").replace("|", "\\|")
+            lines.append(f"| {i} | {title} | {url} | {src_type} | {summary} |")
+
+        logger.info(f"Appending {len(sources)} sources from webSource.json")
+        return "\n".join(lines) + "\n"
+
     def save_final(self, report: AgentReport, lang: str = "EN") -> Path:
         """
-        Save the final polished memo.
+        Save the final polished memo with sources auto-appended.
 
         Args:
             report: The final AgentReport
@@ -189,6 +218,11 @@ generated: {report.timestamp.strftime('%Y-%m-%d')}
 
 """
         content = header + report.content
+
+        # Auto-append sources from webSource.json
+        sources_table = self._format_sources_table()
+        if sources_table:
+            content += sources_table
 
         filepath.write_text(content, encoding="utf-8")
         logger.info(f"Saved final memo ({lang}): {filepath}")

@@ -25,7 +25,6 @@ REPORT_OUTPUT = PROJECT_ROOT / "2 - report output"
 AGENT_ROLE_DIR = FRAMEWORK_ENGINE / "1 - agent_role md prompt"
 INVESTING_TYPE_DIR = FRAMEWORK_ENGINE / "2 - agent_investing_type md prompt" / "analyst_investing_type"
 SYNTHESIS_ENGINE_DIR = FRAMEWORK_ENGINE / "3 - agent synthesis engine md prompt"
-SOURCE_AGENT_DIR = FRAMEWORK_ENGINE / "4 - source_summary_agent md prompt"
 HUMAN_READABLE_DIR = FRAMEWORK_ENGINE / "5 - final_readable_touch-up md prompt"
 SOURCE_SCOUT_AGENT_DIR = FRAMEWORK_ENGINE / "6 - source_scout_agent md prompt"
 
@@ -34,8 +33,6 @@ ANALYST_ROLE_PATH = AGENT_ROLE_DIR / "analyst_prompt.md"
 RD_REVIEW_ROLE_PATH = AGENT_ROLE_DIR / "rd_review_prompt.md"
 RD_SYNTHESIS_ROLE_PATH = AGENT_ROLE_DIR / "rd_synthesis_prompt_v2.md"  # Merged synthesis+polish
 MEMO_ENGINE_PATH = SYNTHESIS_ENGINE_DIR / "buyside_memo_engine_v1.3.0.md"
-SOURCE_SUMMARY_AGENT_PATH = SOURCE_AGENT_DIR / "source_summary_agent.md"
-SOURCE_SUMMARY_AGENT_V2_PATH = SOURCE_AGENT_DIR / "source_summary_agent_v2.md"  # Slim, structured input
 HUMAN_READABLE_ENGINE_PATH = HUMAN_READABLE_DIR / "human_readable_output_engine.md"
 SOURCE_SCOUT_AGENT_PATH = SOURCE_SCOUT_AGENT_DIR / "source_scout_agent.md"
 
@@ -149,15 +146,15 @@ ANALYST_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
     6: {"provider": "openai", "model": "gpt-4o"},      # Macro-Tactical
 }
 
-# Iteration 1 analyst routing: Split across 2 fast providers for parallelism
-# Gemini Flash Lite (1-3) + GPT-4o-mini (4-6) run in parallel
+# Iteration 1 analyst routing: Same models as iterations 2-5 for quality
+# Claude Sonnet (1-3) + GPT-4o (4-6) - no longer using cheap "exploration" models
 ITERATION_1_ANALYST_CONFIG: Dict[int, Dict[str, str]] = {
-    1: {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    2: {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    3: {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    4: {"provider": "openai", "model": "gpt-4o-mini"},
-    5: {"provider": "openai", "model": "gpt-4o-mini"},
-    6: {"provider": "openai", "model": "gpt-4o-mini"},
+    1: {"provider": "claude-cli", "model": "sonnet"},
+    2: {"provider": "claude-cli", "model": "sonnet"},
+    3: {"provider": "claude-cli", "model": "sonnet"},
+    4: {"provider": "openai", "model": "gpt-4o"},
+    5: {"provider": "openai", "model": "gpt-4o"},
+    6: {"provider": "openai", "model": "gpt-4o"},
 }
 
 # RD Review routing by analyst type (3 Claude + 3 Gemini)

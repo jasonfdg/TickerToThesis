@@ -23,7 +23,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dashboard.emitter import ProgressEmitter
@@ -133,6 +133,9 @@ class TickerToThesisPipeline:
         # Thesis evolution tracking for dashboard
         self._previous_thesis_summary: Optional[str] = None
 
+        # Bootstrap report storage for batched initial setup
+        self._bootstrap_report: Optional[AgentReport] = None
+
     # Analyst type names for dashboard display
     ANALYST_NAMES = {
         1: "Quality Compounders",
@@ -221,60 +224,6 @@ class TickerToThesisPipeline:
 
         except Exception as e:
             logger.warning(f"Failed to generate thesis summary: {e}")
-
-    def _format_analyst_summaries_for_rd(self, exclude_type_id: int) -> Optional[str]:
-        """
-        Format analyst summaries for RD review prompt, excluding the current analyst.
-
-        This provides the RD with cross-analyst context so they can highlight
-        impactful findings from other analysts when relevant.
-
-        Args:
-            exclude_type_id: Analyst type to exclude (the one being reviewed)
-
-        Returns:
-            Formatted markdown string of other analysts' summaries,
-            or None if no summaries are available.
-        """
-        summaries_data = self.source_manager.get_analyst_summaries()
-
-        if not summaries_data or not summaries_data.get("summaries"):
-            return None
-
-        iteration = summaries_data.get("iteration", "?")
-        summaries = summaries_data.get("summaries", [])
-
-        # Filter out the analyst being reviewed
-        other_summaries = [
-            s for s in summaries
-            if s.get("type_id") != exclude_type_id
-        ]
-
-        if not other_summaries:
-            return None
-
-        # Build formatted markdown
-        lines = [
-            f"## Other Analysts' Key Findings (Iteration {iteration})",
-            "",
-        ]
-
-        for s in other_summaries:
-            type_name = s.get("type_name", f"Analyst {s.get('type_id', '?')}")
-            position = s.get("position", "?")
-            target = s.get("target_price", "")
-            summary = s.get("summary", "")
-
-            # Format: **Quality Compounder** — LONG @ $85
-            header = f"**{type_name}** — {position}"
-            if target:
-                header += f" @ {target}"
-
-            lines.append(header)
-            lines.append(summary)
-            lines.append("")
-
-        return "\n".join(lines)
 
     def _get_market_data_injection(self) -> str:
         """Get market data block for prompt injection."""
@@ -880,43 +829,21 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         source_scout_report: AgentReport,
         iteration: int,
     ) -> bool:
-        """Update source file with findings from web research agent."""
+        """Update source file with findings from web research agent (no LLM)."""
         if not source_scout_report.is_success:
             return False
 
-        # Build source update prompt from web research findings
-        update_prompt = self.source_manager.build_source_update_prompt(
+        # Direct extraction - no LLM call needed
+        sources_added = self.source_manager.update_sources_from_scout_direct(
             source_scout_report.content,
-            report_type="source_scout",
+            iteration,
         )
 
-        # Run source summary agent to merge findings
-        call = AgentCall(
-            role=AgentRole.SOURCE_SUMMARY,
-            system_prompt=self.prompt_loader.source_summary_agent,
-            user_prompt=update_prompt,
-            iteration=iteration,
-            identifier=f"source_update_source_scout_iter{iteration}",
-        )
-
-        source_response = await self.agent_runner.run_single(call)
-
-        if not source_response.is_success:
-            logger.warning(f"Source summary agent failed for web research: {source_response.error}")
-            return False
-
-        update_success = self.source_manager.update_from_report(
-            source_scout_report.content,
-            source_response.content
-        )
-
-        if update_success:
-            logger.info(f"  Source file updated from web research (iteration {iteration})")
+        if sources_added > 0:
             # Emit source update event for dashboard
-            self.progress.emit_source_updated(new_citations=1)  # Web research typically adds sources
+            self.progress.emit_source_updated(new_citations=sources_added)
             return True
 
-        logger.warning(f"  Source file update from web research failed (iteration {iteration})")
         return False
 
     async def _bootstrap_thesis(self) -> str:
@@ -963,10 +890,9 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
 
             if result.is_success:
                 logger.info(f"Thesis bootstrap complete: {result.token_usage.total_tokens:,} tokens")
-
-                # Add sources from bootstrap to WebSource.json
-                await self._update_sources_from_bootstrap(result)
-
+                # Sources will be extracted and batched in _run_initial_setup()
+                # Store result for later extraction
+                self._bootstrap_report = result
                 return result.content
             else:
                 logger.warning(f"Thesis bootstrap failed: {result.error}")
@@ -976,60 +902,53 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
             logger.warning(f"Thesis bootstrap exception: {e}")
             return ""
 
-    async def _update_sources_from_bootstrap(self, bootstrap_report: AgentReport) -> bool:
-        """Update WebSource.json with sources from thesis bootstrap.
+    async def _extract_bootstrap_sources(self, bootstrap_report: AgentReport) -> List[Dict[str, Any]]:
+        """Extract sources from thesis bootstrap (without writing to source file).
+
+        Uses CitationExtractor for lightweight extraction instead of LLM call.
 
         Args:
             bootstrap_report: The Perplexity response from _bootstrap_thesis()
 
         Returns:
-            True if sources were added successfully
+            List of source entries for batching, empty list on failure
         """
         if not bootstrap_report.is_success:
-            return False
+            return []
 
         logger.info("Extracting sources from thesis bootstrap...")
 
-        # Build source update prompt
-        update_prompt = self.source_manager.build_source_update_prompt(
+        # Use CitationExtractor for lightweight extraction (no LLM call needed)
+        extractor = CitationExtractor()
+        extraction = extractor.extract_from_report(
             bootstrap_report.content,
-            report_type="thesis_bootstrap",
-        )
-
-        # Run source summary agent to parse and merge sources
-        call = AgentCall(
-            role=AgentRole.SOURCE_SUMMARY,
-            system_prompt=self.prompt_loader.source_summary_agent,
-            user_prompt=update_prompt,
+            analyst_type_id=0,  # Bootstrap is not analyst-specific
             iteration=0,
-            identifier="source_update_bootstrap",
         )
 
-        source_response = await self.agent_runner.run_single(call)
+        # Convert extracted sources to source entry format
+        sources = []
+        for src in extraction.sources:
+            source_entry = {
+                "url": src.url,
+                "title": src.title,
+                "type": src.source_type,
+                "summary": src.summary or src.context,
+                "tags": ["bootstrap"],
+            }
+            sources.append(source_entry)
 
-        if not source_response.is_success:
-            logger.warning(f"Bootstrap source extraction failed: {source_response.error}")
-            return False
+        logger.info(f"Extracted {len(sources)} sources from bootstrap")
+        return sources
 
-        update_success = self.source_manager.update_from_report(
-            bootstrap_report.content,
-            source_response.content
-        )
+    async def _fetch_stock_data(self) -> Optional[Dict[str, Any]]:
+        """Fetch baseline stock data using yfinance (without writing to source file).
 
-        if update_success:
-            logger.info("WebSource.json updated with bootstrap sources")
-            # Emit source update event for dashboard
-            self.progress.emit_source_updated(new_citations=1)
-            return True
-
-        logger.warning("Failed to update WebSource.json from bootstrap")
-        return False
-
-    async def _run_initial_source_scout(self) -> None:
-        """Fetch baseline stock data using yfinance.
-
-        Replaces Perplexity API call with direct yfinance data fetch.
+        Returns stock data entry for batching with bootstrap sources.
         More reliable, consistent, and free.
+
+        Returns:
+            Stock data entry dict for source file, or None if fetch failed
         """
         logger.info("Fetching baseline stock data via yfinance...")
 
@@ -1041,7 +960,7 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
             logger.warning(
                 f"yfinance fetch failed for {self.ticker}, skipping initial data"
             )
-            return
+            return None
 
         # Store for prompt building (ground truth injection)
         self.stock_data = stock_data
@@ -1066,15 +985,41 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
                 f"({stock_data.recommendation_key or 'N/A'})"
             )
 
-        # Add to source file
-        source_entry = stock_data.to_source_json()
-        self.source_manager.add_source(source_entry)
+        # Return entry for batching (don't write yet)
+        return stock_data.to_source_json()
 
-        # Emit dashboard update
-        self.progress.emit_source_updated(new_citations=1)
+    async def _run_initial_setup(self) -> int:
+        """Batch yfinance stock data + bootstrap sources into single write.
+
+        This consolidates the initial pipeline setup into a single atomic write,
+        reducing writes from 2 to 1.
+
+        Returns:
+            Number of sources added to the source file
+        """
+        logger.info("Running initial setup (batched yfinance + bootstrap)...")
+
+        # 1. Fetch stock data (doesn't write)
+        stock_entry = await self._fetch_stock_data()
+
+        # 2. Extract bootstrap sources if bootstrap was run
+        bootstrap_sources: List[Dict[str, Any]] = []
+        if hasattr(self, '_bootstrap_report') and self._bootstrap_report:
+            bootstrap_sources = await self._extract_bootstrap_sources(self._bootstrap_report)
+
+        # 3. Single batched write
+        sources_added = self.source_manager.initialize_with_bootstrap(
+            stock_data=stock_entry,
+            bootstrap_sources=bootstrap_sources if bootstrap_sources else None,
+        )
+
+        # Emit dashboard updates
+        if sources_added > 0:
+            self.progress.emit_source_updated(new_citations=sources_added)
         self._emit_cost_update()
 
-        logger.info("  Baseline stock data added to source file")
+        logger.info(f"Initial setup complete: {sources_added} sources added")
+        return sources_added
 
     async def _run_iteration_1(self) -> None:
         """Run iteration 1 (genesis): Initial analyst reports and RD reviews."""
@@ -1121,39 +1066,44 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         # Emit cost update after analyst phase
         self._emit_cost_update()
 
-        # Phase 2: Source update (extracts citations AND analyst_summaries)
-        # Must complete before RD reviews so summaries are available for cross-analyst context
-        logger.info("Phase 2: Updating sources (citations + analyst summaries)...")
-        source_updated = await self._update_sources_from_reports(analyst_reports, 1)
-        iteration_state.source_updated = source_updated
+        # Phase 2+3: Run citation extraction AND RD reviews in PARALLEL
+        # (Experiment proved analyst summaries don't help RD cross-referencing)
+        logger.info("Phase 2+3: Citation extraction + RD reviews (parallel)...")
 
-        # Phase 3: RD reviews with cross-analyst summaries
-        logger.info("Phase 3: Running 6 parallel RD reviews (with cross-analyst context)...")
-
-        # Build RD review calls with analyst summaries injected
+        # Build RD review calls (no analyst summaries needed)
         rd_calls = []
         for type_id in range(1, 7):
             if type_id in analyst_reports and analyst_reports[type_id].is_success:
-                # Get summaries of OTHER analysts for cross-analyst context
-                summaries_md = self._format_analyst_summaries_for_rd(exclude_type_id=type_id)
                 call = AgentCall(
                     role=AgentRole.RD_REVIEW,
                     system_prompt=self._build_rd_review_system_prompt(),
                     user_prompt=self._build_rd_review_user_prompt(
                         type_id, 1, analyst_reports[type_id].content,
-                        analyst_summaries_md=summaries_md,
                     ),
                     investing_type_id=type_id,
                     iteration=1,
                 )
                 rd_calls.append(call)
 
-        rd_reviews = await self.agent_runner.run_rd_review_batch(rd_calls)
-        iteration_state.rd_reviews = rd_reviews
-
-        # Emit RD started events
+        # Emit RD started events before parallel execution
         for type_id in range(1, 7):
             self.progress.emit_agent_started("rd_review", type_id, f"RD Review {type_id}")
+
+        # Run citation extraction and RD reviews in parallel
+        async with asyncio.TaskGroup() as tg:
+            citation_task = tg.create_task(
+                self._run_citation_extraction_only(analyst_reports, 1)
+            )
+            rd_task = tg.create_task(
+                self.agent_runner.run_rd_review_batch(rd_calls)
+            )
+
+        # Both tasks complete - get results
+        sources_added = citation_task.result()
+        rd_reviews = rd_task.result()
+        iteration_state.rd_reviews = rd_reviews
+        iteration_state.source_updated = sources_added > 0
+        logger.info(f"  Citation extraction: +{sources_added} sources")
 
         # Save RD reviews and emit completion events
         for type_id, review in rd_reviews.items():
@@ -1244,42 +1194,47 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         # Emit cost update after analyst phase
         self._emit_cost_update()
 
-        # Phase 2: Source update (extracts citations AND analyst_summaries)
-        # Must complete before RD reviews so summaries are available for cross-analyst context
-        logger.info("Phase 2: Updating sources (citations + analyst summaries)...")
-        source_updated = await self._update_sources_from_reports(analyst_reports, iteration)
-        iteration_state.source_updated = source_updated
+        # Phase 2+3: Run citation extraction AND RD reviews in PARALLEL
+        # (Experiment proved analyst summaries don't help RD cross-referencing)
+        logger.info("Phase 2+3: Citation extraction + RD reviews (parallel)...")
 
-        # Phase 3: RD reviews with cross-analyst summaries
-        logger.info("Phase 3: Running 6 parallel RD reviews (with cross-analyst context)...")
-
-        # Build RD review calls with analyst summaries injected
+        # Build RD review calls (no analyst summaries needed)
         rd_calls = []
         for type_id in range(1, 7):
             if type_id in analyst_reports and analyst_reports[type_id].is_success:
                 # Load previous RD feedback for engagement assessment
                 previous_rd_feedback = self.report_saver.load_rd_review(type_id, iteration - 1)
-                # Get summaries of OTHER analysts for cross-analyst context
-                summaries_md = self._format_analyst_summaries_for_rd(exclude_type_id=type_id)
                 call = AgentCall(
                     role=AgentRole.RD_REVIEW,
                     system_prompt=self._build_rd_review_system_prompt(),
                     user_prompt=self._build_rd_review_user_prompt(
                         type_id, iteration, analyst_reports[type_id].content,
                         previous_rd_feedback=previous_rd_feedback,
-                        analyst_summaries_md=summaries_md,
                     ),
                     investing_type_id=type_id,
                     iteration=iteration,
                 )
                 rd_calls.append(call)
 
-        # Emit RD started events
+        # Emit RD started events before parallel execution
         for type_id in range(1, 7):
             self.progress.emit_agent_started("rd_review", type_id, f"RD Review {type_id}")
 
-        rd_reviews = await self.agent_runner.run_rd_review_batch(rd_calls)
+        # Run citation extraction and RD reviews in parallel
+        async with asyncio.TaskGroup() as tg:
+            citation_task = tg.create_task(
+                self._run_citation_extraction_only(analyst_reports, iteration)
+            )
+            rd_task = tg.create_task(
+                self.agent_runner.run_rd_review_batch(rd_calls)
+            )
+
+        # Both tasks complete - get results
+        sources_added = citation_task.result()
+        rd_reviews = rd_task.result()
         iteration_state.rd_reviews = rd_reviews
+        iteration_state.source_updated = sources_added > 0
+        logger.info(f"  Citation extraction: +{sources_added} sources")
 
         # Save RD reviews and emit completion events
         for type_id, review in rd_reviews.items():
@@ -1437,46 +1392,36 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
             logger.error(f"PDF export failed: {e}")
             return {"errors": [str(e)]}
 
-    async def _update_sources_from_reports(
+    async def _run_citation_extraction_only(
         self,
-        reports: Dict[int, AgentReport],
+        analyst_reports: Dict[int, AgentReport],
         iteration: int,
-        max_retries: int = 2,
-        use_v2: bool = True,
-    ) -> bool:
+    ) -> int:
         """
-        Update source file with sources from analyst reports.
+        Extract citations from analyst reports and update webSource.json.
 
-        V2 Flow (default):
-        1. Pre-extract citations using CitationExtractor
-        2. Build slim structured prompt
-        3. Try Haiku first (fast, cheap)
-        4. Escalate to Sonnet if thesis extraction fails
+        This is a lightweight extraction that runs in parallel with RD reviews.
+        Does NOT call source_summary_agent or generate analyst_summaries.
 
         Args:
-            reports: Dict of analyst reports by type_id
+            analyst_reports: Dict of analyst reports by type_id
             iteration: Current iteration number
-            max_retries: Number of retries if source update fails
-            use_v2: Use v2 flow with pre-extraction (default True)
 
         Returns:
-            True if source file was updated successfully
+            Number of sources added
         """
-        if not use_v2:
-            return await self._update_sources_from_reports_v1(reports, iteration, max_retries)
-
-        # V2 Flow: Pre-extract citations
+        # Extract report contents
         report_contents = {
             type_id: report.content
-            for type_id, report in reports.items()
+            for type_id, report in analyst_reports.items()
             if report.is_success
         }
 
         if not report_contents:
-            logger.warning("No successful reports to update sources from")
-            return False
+            logger.warning("No successful reports for citation extraction")
+            return 0
 
-        # Pre-extract citations and thesis claims
+        # Pre-extract citations using CitationExtractor
         extractor = CitationExtractor()
         extractions = []
         for type_id, content in report_contents.items():
@@ -1484,159 +1429,21 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
             extractions.append(extraction.to_dict())
 
         total_sources = sum(len(e["sources"]) for e in extractions)
-        total_claims = sum(len(e["thesis_claims"]) for e in extractions)
         logger.info(
-            f"Pre-extracted: {total_sources} sources, {total_claims} thesis claims "
-            f"from {len(report_contents)} reports"
+            f"Pre-extracted: {total_sources} sources from {len(report_contents)} reports"
         )
 
-        # Build slim prompt with extractions
-        update_prompt = self.source_manager.build_slim_source_update_prompt(
-            extractions, iteration
+        # Update source file with extracted citations
+        sources_added = self.source_manager.update_citations_only(
+            extractions=extractions,
+            iteration=iteration,
         )
 
-        # Try with source_summary_agent_v2
-        success = await self._run_source_update_v2(
-            update_prompt, iteration, extractions, max_retries
-        )
+        # Emit source update event for dashboard
+        if sources_added > 0:
+            self.progress.emit_source_updated(new_citations=sources_added)
 
-        if success:
-            return True
-
-        # Fallback to v1 if v2 fails completely
-        logger.warning("V2 source update failed, falling back to v1...")
-        return await self._update_sources_from_reports_v1(reports, iteration, max_retries)
-
-    async def _run_source_update_v2(
-        self,
-        update_prompt: str,
-        iteration: int,
-        extractions: List[Dict],
-        max_retries: int = 2,
-    ) -> bool:
-        """
-        Run source update with v2 agent using configured provider.
-
-        Uses provider from ROLE_PROVIDER_CONFIG["source_summary"] (default: gpt-4o-mini).
-        GPT-4o-mini has best JSON validity from benchmark testing.
-
-        Args:
-            update_prompt: Structured prompt for v2 agent
-            iteration: Current iteration number
-            extractions: Pre-extracted data for validation
-            max_retries: Number of retries
-
-        Returns:
-            True if update succeeded
-        """
-        for attempt in range(max_retries + 1):
-            # Use configured provider (gpt-4o-mini by default - best JSON validity)
-            call = AgentCall(
-                role=AgentRole.SOURCE_SUMMARY,
-                system_prompt=self.prompt_loader.source_summary_agent_v2,
-                user_prompt=update_prompt,
-                iteration=iteration,
-                identifier=f"source_update_v2_iter{iteration}_attempt{attempt}",
-                # No provider/model override - uses config routing
-            )
-
-            source_response = await self.agent_runner.run_single(call)
-
-            if not source_response.is_success:
-                logger.warning(f"Source summary v2 failed: {source_response.error}")
-                if attempt < max_retries:
-                    logger.info(f"Retrying source update (attempt {attempt + 2}/{max_retries + 1})...")
-                continue
-
-            # Try to update from the response
-            update_success = self.source_manager.update_from_report(
-                "",  # No raw report content needed for v2
-                source_response.content
-            )
-
-            if not update_success:
-                logger.warning(f"Source update parsing failed (attempt {attempt + 1})")
-                continue
-
-            # Validate thesis extraction quality
-            data = self.source_manager.load_source_file()
-            if self.source_manager.validate_thesis_extraction(data):
-                logger.info(f"Source file updated with v2, iteration {iteration}")
-                # Emit source update event for dashboard
-                num_sources = sum(len(e.get("sources", [])) for e in extractions)
-                self.progress.emit_source_updated(new_citations=num_sources)
-                return True
-            else:
-                logger.warning(f"Thesis extraction incomplete (attempt {attempt + 1})")
-
-        return False
-
-    async def _update_sources_from_reports_v1(
-        self,
-        reports: Dict[int, AgentReport],
-        iteration: int,
-        max_retries: int = 2,
-    ) -> bool:
-        """
-        Original v1 source update flow (fallback).
-
-        Uses raw markdown reports and v1 source_summary_agent.
-        """
-        # Combine all successful reports into one update
-        combined_content = ""
-        for type_id, report in reports.items():
-            if report.is_success:
-                type_name = self.prompt_loader.investing_type_name(type_id)
-                combined_content += f"\n\n## {type_name} Analyst (Iteration {iteration})\n"
-                combined_content += report.content
-
-        if not combined_content:
-            logger.warning("No successful reports to update sources from")
-            return False
-
-        for attempt in range(max_retries + 1):
-            # Build source update prompt
-            update_prompt = self.source_manager.build_source_update_prompt(
-                combined_content,
-                report_type="analyst_reports",
-            )
-
-            # Run source summary agent
-            call = AgentCall(
-                role=AgentRole.SOURCE_SUMMARY,
-                system_prompt=self.prompt_loader.source_summary_agent,
-                user_prompt=update_prompt,
-                iteration=iteration,
-                identifier=f"source_update_v1_iter{iteration}_attempt{attempt}",
-            )
-
-            source_response = await self.agent_runner.run_single(call)
-
-            if not source_response.is_success:
-                logger.warning(f"Source summary agent failed: {source_response.error}")
-                if attempt < max_retries:
-                    logger.info(f"Retrying source update (attempt {attempt + 2}/{max_retries + 1})...")
-                    continue
-                return False
-
-            # Try to update from the response
-            update_success = self.source_manager.update_from_report(
-                combined_content,
-                source_response.content
-            )
-
-            if update_success:
-                logger.info(f"Source file updated successfully v1 (iteration {iteration})")
-                # Emit source update event for dashboard
-                self.progress.emit_source_updated(new_citations=len(reports))
-                return True
-
-            if attempt < max_retries:
-                logger.warning(f"Source update parsing failed, retrying (attempt {attempt + 2}/{max_retries + 1})...")
-            else:
-                logger.error(f"Source file update failed after {max_retries + 1} attempts")
-
-        return False
+        return sources_added
 
     async def run(self) -> str:
         """
@@ -1677,9 +1484,9 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
                 # Update state to reflect the enriched thesis
                 self.state.preliminary_thinking = self.preliminary_thinking
 
-            # Run initial source scout to establish baseline data
+            # Run initial setup (batched yfinance + bootstrap into single write)
             self.progress.start_genesis()
-            await self._run_initial_source_scout()
+            await self._run_initial_setup()
             # Estimate genesis cost (rough: ~2K tokens at $0.003/1K)
             self.progress.end_genesis(tokens=2000, cost=0.006)
 

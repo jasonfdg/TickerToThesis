@@ -6,9 +6,10 @@ Manages the source file JSON operations for the pipeline.
 
 import json
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from .config import get_source_file_path
@@ -48,33 +49,46 @@ class SourceManager:
         self._cache: Optional[Dict[str, Any]] = None
 
     def _get_empty_source_file(self) -> Dict[str, Any]:
-        """Create an empty source file structure (v2 slim schema)."""
+        """Create an empty source file structure (v4 schema - simplified)."""
         return {
             "ticker": self.ticker,
+            "schema_version": 4,
             "last_updated": datetime.now().isoformat(),
             "source_count": 0,
-            "schema_version": 2,
-            "categories": {
-                "core": [
-                    "sec_filing",
-                    "earnings",
-                    "company_ir",
-                    "sellside",
-                    "news",
-                    "industry",
-                    "alternative",
-                    "expert",
-                    "academic",
-                ],
-                "custom": [],
-            },
-            "research_context": {
-                "thesis_points": [],
-                "key_debates": [],
-                "research_iterations": [],
-            },
+            "iterations": [],
             "sources": [],
         }
+
+    def _validate_before_save(self, data: Dict[str, Any]) -> bool:
+        """
+        Validate source file structure before saving.
+
+        Checks:
+        - Required top-level fields exist (ticker, sources)
+        - 'sources' is a list
+        - Each source has minimum required fields (id, url)
+
+        Returns:
+            True if valid, False otherwise
+        """
+        required_top = ["ticker", "sources"]
+        for field in required_top:
+            if field not in data:
+                logger.error(f"Validation failed: missing required field '{field}'")
+                return False
+
+        if not isinstance(data.get("sources"), list):
+            logger.error("Validation failed: 'sources' must be a list")
+            return False
+
+        # Validate each source has minimum fields
+        for i, src in enumerate(data.get("sources", [])):
+            if not src.get("id"):
+                logger.warning(f"Source at index {i} missing 'id' field")
+            if not src.get("url"):
+                logger.warning(f"Source at index {i} missing 'url' field")
+
+        return True
 
     def load_source_file(self) -> Dict[str, Any]:
         """
@@ -102,24 +116,54 @@ class SourceManager:
 
     def save_source_file(self, data: Dict[str, Any]) -> None:
         """
-        Save updated source file content.
+        Save updated source file content with validation and atomic write.
+
+        Uses atomic write pattern (temp file -> rename) to prevent corruption.
+        Creates backup of previous version before overwriting.
 
         Args:
             data: The source file content to save
+
+        Raises:
+            ValueError: If data validation fails
         """
-        # Update timestamp
+        # Validate before saving
+        if not self._validate_before_save(data):
+            raise ValueError("Source data validation failed, refusing to save corrupted data")
+
+        # Update metadata
         data["last_updated"] = datetime.now().isoformat()
         data["source_count"] = len(data.get("sources", []))
 
         # Ensure directory exists
         self.source_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write file
-        self.source_file_path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        # Define paths for atomic write
+        temp_path = self.source_file_path.with_suffix('.tmp')
+        backup_path = self.source_file_path.with_suffix('.backup')
+
+        # Serialize JSON
+        json_content = json.dumps(data, indent=2, ensure_ascii=False)
+
+        # Write to temp file first
+        temp_path.write_text(json_content, encoding="utf-8")
+
+        # Backup existing file if it exists
+        if self.source_file_path.exists():
+            try:
+                shutil.copy2(self.source_file_path, backup_path)
+                logger.debug(f"Created backup: {backup_path}")
+            except Exception as e:
+                logger.warning(f"Failed to create backup: {e}")
+
+        # Atomic rename: temp -> target
+        temp_path.rename(self.source_file_path)
+
         self._cache = data
-        logger.info(f"Saved source file: {self.source_file_path}")
+        logger.info(
+            f"Saved source file: {self.source_file_path} "
+            f"({data['source_count']} sources, {len(json_content)} bytes)"
+        )
 
     def _extract_json_from_response(self, response: str) -> Optional[Dict[str, Any]]:
         """
@@ -131,6 +175,7 @@ class SourceManager:
         - JSON with text before/after
         - BOM and whitespace issues
         - Truncated JSON (attempts repair)
+        - Trailing commas (common LLM mistake)
 
         Returns:
             Parsed JSON dict or None if extraction fails
@@ -148,10 +193,36 @@ class SourceManager:
         # Strategy 1: Try direct JSON parse
         try:
             return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as e:
+            logger.warning(f"Direct JSON parse failed at position {e.pos}: {e.msg}. Context: ...{cleaned[max(0,e.pos-50):e.pos+50]}...")
 
-        # Strategy 2: Extract from markdown code blocks
+        # Strategy 1b: Fix trailing commas (common LLM mistake) and try again
+        fixed = self._fix_trailing_commas(cleaned)
+        if fixed != cleaned:
+            try:
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 2: Strip markdown code fences if present (handles incomplete fences)
+        # This handles cases like: ```json\n{...}\n``` or ```json\n{...} (no closing fence)
+        if cleaned.startswith('```'):
+            # Remove opening fence (```json or ```)
+            lines = cleaned.split('\n', 1)
+            if len(lines) > 1:
+                cleaned = lines[1]  # Skip the first line with ```json
+            # Remove closing fence if present
+            if cleaned.rstrip().endswith('```'):
+                cleaned = cleaned.rstrip()[:-3].rstrip()
+            # Try parsing after stripping fences
+            try:
+                parsed = json.loads(cleaned)
+                if isinstance(parsed, dict) and "ticker" in parsed:
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 3: Extract from markdown code blocks (greedy match)
         json_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
         for block in json_blocks:
             try:
@@ -161,7 +232,7 @@ class SourceManager:
             except json.JSONDecodeError:
                 continue
 
-        # Strategy 3: Find JSON by locating first { and trying progressively shorter substrings
+        # Strategy 4: Find JSON by locating first { and trying progressively shorter substrings
         # This handles cases where there's extra text after the JSON
         first_brace = cleaned.find('{')
         if first_brace == -1:
@@ -171,29 +242,42 @@ class SourceManager:
         last_brace = cleaned.rfind('}')
         while last_brace > first_brace:
             potential_json = cleaned[first_brace:last_brace + 1]
-            try:
-                parsed = json.loads(potential_json)
-                if isinstance(parsed, dict) and "ticker" in parsed:
-                    return parsed
-            except json.JSONDecodeError:
-                pass
-            # Try finding the previous }
-            last_brace = cleaned.rfind('}', first_brace, last_brace)
-
-        # Strategy 4: Attempt to repair truncated JSON
-        # If response starts with { and contains "ticker", try to close unclosed braces/brackets
-        if cleaned.startswith('{') and '"ticker"' in cleaned:
-            repaired = self._attempt_json_repair(cleaned[first_brace:])
-            if repaired:
+            # Try with and without trailing comma fix
+            for candidate in [potential_json, self._fix_trailing_commas(potential_json)]:
                 try:
-                    parsed = json.loads(repaired)
+                    parsed = json.loads(candidate)
                     if isinstance(parsed, dict) and "ticker" in parsed:
-                        logger.info("Successfully repaired truncated JSON")
                         return parsed
                 except json.JSONDecodeError:
                     pass
+            # Try finding the previous }
+            last_brace = cleaned.rfind('}', first_brace, last_brace)
+
+        # Strategy 5: Attempt to repair truncated JSON
+        # If response starts with { and contains "ticker", try to close unclosed braces/brackets
+        if first_brace >= 0 and '"ticker"' in cleaned:
+            repaired = self._attempt_json_repair(cleaned[first_brace:])
+            if repaired:
+                # Try with and without trailing comma fix
+                for candidate in [repaired, self._fix_trailing_commas(repaired)]:
+                    try:
+                        parsed = json.loads(candidate)
+                        if isinstance(parsed, dict) and "ticker" in parsed:
+                            logger.info("Successfully repaired truncated JSON")
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
 
         return None
+
+    def _fix_trailing_commas(self, json_str: str) -> str:
+        """Remove trailing commas before ] or } (common LLM mistake)."""
+        import re
+        # Remove trailing commas before closing brackets/braces
+        # Handle: [1, 2, 3,] -> [1, 2, 3]
+        # Handle: {"a": 1,} -> {"a": 1}
+        fixed = re.sub(r',(\s*[}\]])', r'\1', json_str)
+        return fixed
 
     def _attempt_json_repair(self, json_str: str) -> Optional[str]:
         """
@@ -206,8 +290,9 @@ class SourceManager:
         open_brackets = 0
         in_string = False
         escape_next = False
+        last_structure = []  # Track what we're inside: 'object', 'array', 'key', 'value'
 
-        for char in json_str:
+        for i, char in enumerate(json_str):
             if escape_next:
                 escape_next = False
                 continue
@@ -222,25 +307,51 @@ class SourceManager:
 
             if char == '{':
                 open_braces += 1
+                last_structure.append('object')
             elif char == '}':
                 open_braces -= 1
+                if last_structure and last_structure[-1] in ('object', 'value'):
+                    last_structure.pop()
             elif char == '[':
                 open_brackets += 1
+                last_structure.append('array')
             elif char == ']':
                 open_brackets -= 1
+                if last_structure and last_structure[-1] == 'array':
+                    last_structure.pop()
+            elif char == ':' and last_structure and last_structure[-1] == 'object':
+                last_structure.append('value')
+            elif char == ',' and last_structure:
+                if last_structure[-1] == 'value':
+                    last_structure.pop()
 
-        # If we're still in a string, close it
+        # If we're still in a string, close it and handle context
         if in_string:
             json_str += '"'
+            # After closing string, we might be in a value context - add null if needed
+            # Check if we just closed a value string (common case)
+            stripped = json_str.rstrip()
+            if stripped.endswith('",'):
+                # We're good, value is complete
+                pass
+            elif stripped.endswith('"'):
+                # Check what came before to see if we need anything
+                # This handles: "key": "truncated value" -> needs , or } next
+                pass
 
-        # Close unclosed brackets and braces
-        json_str += ']' * max(0, open_brackets)
-        json_str += '}' * max(0, open_braces)
+        # Remove any trailing comma before we close brackets (invalid JSON)
+        json_str = json_str.rstrip()
+        while json_str.endswith(','):
+            json_str = json_str[:-1].rstrip()
 
-        # Only return if we made meaningful repairs
-        if open_braces > 0 or open_brackets > 0 or in_string:
-            return json_str
-        return None
+        # Close unclosed brackets and braces in correct order
+        for _ in range(max(0, open_brackets)):
+            json_str += ']'
+        for _ in range(max(0, open_braces)):
+            json_str += '}'
+
+        # Return the string (repaired or original) - let caller try parsing
+        return json_str
 
     def _validate_source_data(self, data: Dict[str, Any]) -> bool:
         """Validate that parsed JSON has required structure."""
@@ -305,13 +416,19 @@ class SourceManager:
         url = re.sub(r"^https?://(www\.)?", "https://", url)
         return url
 
-    def update_from_report(self, report_content: str, new_source_data: str) -> bool:
+    def update_from_report(
+        self,
+        report_content: str,
+        new_source_data: str,
+        mark_verified: bool = False,
+    ) -> bool:
         """
         Update source file with new data from source_summary_agent.
 
         Args:
             report_content: The analyst/RD report that generated new sources
             new_source_data: JSON string from source_summary_agent
+            mark_verified: If True, mark all sources as verified (for web search sources)
 
         Returns:
             True if update succeeded, False otherwise
@@ -340,6 +457,12 @@ class SourceManager:
                 self._merge_sources_incrementally(sources)
                 return True
             return False
+
+        # Mark sources as verified if requested (for web search results)
+        if mark_verified:
+            for source in new_data.get("sources", []):
+                if "verified" not in source:
+                    source["verified"] = True
 
         # Full update succeeded
         self.save_source_file(new_data)
@@ -466,150 +589,7 @@ class SourceManager:
         for src_type, count in sorted(type_counts.items(), key=lambda x: -x[1]):
             lines.append(f"  - {src_type}: {count}")
 
-        # Add thesis points if present
-        thesis_points = data.get("research_context", {}).get("thesis_points", [])
-        if thesis_points:
-            bull = sum(1 for tp in thesis_points if tp.get("stance") == "bull")
-            bear = sum(1 for tp in thesis_points if tp.get("stance") == "bear")
-            lines.append(f"Thesis points: {len(thesis_points)} ({bull} bull, {bear} bear)")
-
         return "\n".join(lines)
-
-    def build_source_update_prompt(
-        self,
-        new_report: str,
-        report_type: str = "analyst_report",
-        analyst_id: Optional[str] = None,
-    ) -> str:
-        """
-        Build the prompt for source_summary_agent to update sources.
-
-        Args:
-            new_report: The new analyst report or director feedback
-            report_type: Type of report ('analyst_report' or 'director_feedback')
-            analyst_id: Optional analyst identifier
-
-        Returns:
-            Complete prompt for source_summary_agent
-        """
-        current_source = self.get_source_content()
-
-        prompt = f"""Process the following {report_type} for ticker {self.ticker}.
-
-## Current Source File
-```json
-{current_source}
-```
-
-## New Report to Process
-```markdown
-{new_report}
-```
-
-## Instructions
-1. Extract all citations, links, and references from the new report
-2. For existing sources (by URL), amend with new context
-3. For new sources, add with complete metadata
-4. Update research_context if thesis points or key debates identified
-5. Log this iteration in research_iterations
-6. Output the complete updated JSON
-
-## CRITICAL OUTPUT REQUIREMENTS
-- Output ONLY valid JSON - no explanation, no markdown formatting, no text before or after
-- Start your response with {{ and end with }}
-- The JSON must be parseable by json.loads()
-- Include the complete source file structure with all existing + new sources
-- Do not wrap in ```json``` code blocks
-
-Example of correct output format:
-{{"ticker": "{self.ticker}", "last_updated": "...", "sources": [...], ...}}
-"""
-
-        return prompt
-
-    def build_slim_source_update_prompt(
-        self,
-        extractions: List[Dict[str, Any]],
-        iteration: int,
-    ) -> str:
-        """
-        Build a structured prompt for source_summary_agent_v2 using pre-extracted data.
-
-        This version uses pre-extracted citations and thesis claims (JSON),
-        making the task tractable for Haiku.
-
-        Args:
-            extractions: List of extraction results from CitationExtractor
-            iteration: Current pipeline iteration (1-5)
-
-        Returns:
-            Structured JSON prompt for source_summary_agent_v2
-        """
-        current_source = self.load_source_file()
-
-        # Build the structured input for v2 agent
-        prompt_data = {
-            "ticker": self.ticker,
-            "current_sources": current_source,
-            "extractions": extractions,
-            "iteration": iteration,
-        }
-
-        prompt = f"""Process the pre-extracted citations and thesis claims for {self.ticker}.
-
-## Structured Input
-```json
-{json.dumps(prompt_data, indent=2, ensure_ascii=False)}
-```
-
-## Instructions
-1. For each source in extractions:
-   - If URL exists in current_sources: AMEND (enrich summary, merge tags)
-   - If URL is new: ADD with complete metadata (generate next src_XXX)
-2. For each thesis_claim in extractions:
-   - If similar claim exists with different stance: add to analyst_disagreements
-   - If new claim: CREATE thesis_point with author = analyst_type_X
-3. Log this iteration in research_iterations
-4. Set schema_version: 2
-
-## CRITICAL OUTPUT REQUIREMENTS
-- Output ONLY valid JSON
-- Start with {{ and end with }}
-- Include ALL existing sources + new sources
-- Include ALL existing thesis_points + new thesis_points
-- Update source_count and last_updated
-
-{{"ticker": "{self.ticker}", "schema_version": 2, "sources": [...], "research_context": {{...}}, ...}}
-"""
-
-        return prompt
-
-    def validate_thesis_extraction(self, response_data: Dict[str, Any]) -> bool:
-        """
-        Validate that thesis extraction was successful.
-
-        Returns True if thesis_points and research_iterations are properly populated.
-        Used to determine if Haiku->Sonnet escalation is needed.
-        """
-        if not response_data:
-            return False
-
-        research_context = response_data.get("research_context", {})
-
-        # Check thesis_points exist and have required fields
-        thesis_points = research_context.get("thesis_points", [])
-        if thesis_points:
-            for tp in thesis_points:
-                if not all(k in tp for k in ["id", "stance", "claim", "author"]):
-                    return False
-
-        # Check research_iterations are logged
-        iterations = research_context.get("research_iterations", [])
-        if not iterations:
-            logger.warning("No research_iterations logged - thesis extraction may have failed")
-            return False
-
-        return True
 
     def clear_cache(self) -> None:
         """Clear the cached source file content."""
@@ -620,32 +600,39 @@ Example of correct output format:
         data = self.load_source_file()
         return len(data.get("sources", [])) > 0
 
-    def add_source(self, source_entry: Dict[str, Any]) -> bool:
+    def initialize_with_bootstrap(
+        self,
+        stock_data: Optional[Dict[str, Any]] = None,
+        bootstrap_sources: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
         """
-        Add a single source entry to the source file.
+        Initialize source file with stock data + bootstrap sources in single write.
+
+        Combines the initial yfinance stock data fetch and bootstrap web research
+        into a single atomic write, reducing writes from 2 to 1.
 
         Args:
-            source_entry: Dict with url, title, summary, etc.
+            stock_data: Stock data entry from StockData.to_source_json()
+            bootstrap_sources: List of source entries extracted from bootstrap
 
         Returns:
-            True if added successfully
+            Number of sources added
         """
         try:
-            # Load current sources
-            sources = self.load_source_file()
+            self.clear_cache()
+            data = self.load_source_file()
 
-            # Check for duplicate URL
+            sources_added = 0
+
+            # Track existing URLs for deduplication
             existing_urls = {
                 self._normalize_url(s.get("url", ""))
-                for s in sources.get("sources", [])
+                for s in data.get("sources", [])
             }
-            if self._normalize_url(source_entry.get("url", "")) in existing_urls:
-                logger.debug(f"Source already exists: {source_entry.get('url')}")
-                return False
 
             # Find max source ID
             max_id = 0
-            for src in sources.get("sources", []):
+            for src in data.get("sources", []):
                 if src.get("id", "").startswith("src_"):
                     try:
                         num = int(src["id"].replace("src_", ""))
@@ -653,199 +640,312 @@ Example of correct output format:
                     except ValueError:
                         pass
 
-            # Assign ID to new source
-            max_id += 1
-            source_entry["id"] = f"src_{max_id:03d}"
-            source_entry["added_at"] = datetime.now().isoformat()
+            # Add stock data as first source (verified ground truth)
+            if stock_data:
+                stock_url = stock_data.get("url", "")
+                normalized_stock_url = self._normalize_url(stock_url)
 
-            # Add to sources list
-            if "sources" not in sources:
-                sources["sources"] = []
-            sources["sources"].insert(0, source_entry)  # Add at beginning
+                if normalized_stock_url not in existing_urls:
+                    max_id += 1
+                    stock_data["id"] = f"src_{max_id:03d}"
+                    stock_data["added_at"] = datetime.now().isoformat()
+                    stock_data["verified"] = True  # yfinance API = verified source
+                    data.setdefault("sources", []).insert(0, stock_data)
+                    existing_urls.add(normalized_stock_url)
+                    sources_added += 1
+                    logger.debug(f"Added stock data source: {stock_data.get('title', 'Unknown')}")
 
-            # Save
-            self.save_source_file(sources)
-            logger.info(f"Added source: {source_entry.get('title', 'Unknown')}")
-            return True
+            # Add bootstrap sources
+            if bootstrap_sources:
+                for source in bootstrap_sources:
+                    url = source.get("url", "")
+                    if not url:
+                        continue
+
+                    normalized_url = self._normalize_url(url)
+                    if normalized_url in existing_urls:
+                        continue
+
+                    max_id += 1
+                    source["id"] = f"src_{max_id:03d}"
+                    source["added_at"] = datetime.now().isoformat()
+                    source["verified"] = True  # Perplexity search = verified source
+                    data.setdefault("sources", []).append(source)
+                    existing_urls.add(normalized_url)
+                    sources_added += 1
+
+            # Log the initialization (v4 schema uses top-level iterations)
+            if "iterations" not in data:
+                data["iterations"] = []
+            data["iterations"].append({
+                "iteration": 0,
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "sources_added": sources_added,
+                "type": "bootstrap",
+            })
+
+            # Single atomic save
+            self.save_source_file(data)
+
+            logger.info(
+                f"Initialized source file: {sources_added} sources "
+                f"(stock_data: {stock_data is not None}, "
+                f"bootstrap: {len(bootstrap_sources) if bootstrap_sources else 0})"
+            )
+
+            return sources_added
 
         except Exception as e:
-            logger.error(f"Failed to add source: {e}")
-            return False
+            logger.error(f"Failed to initialize source file: {e}", exc_info=True)
+            return 0
 
-    def log_research_iteration(
+    def update_sources_from_scout_direct(
         self,
-        report_name: str,
-        iteration_type: str,
-        focus: str,
-        sources_added: int = 0,
-        thesis_points_added: Optional[List[str]] = None,
-        action_items: Optional[List[str]] = None,
-        analyst_id: Optional[str] = None,
-    ) -> None:
-        """
-        Log a research iteration to track pipeline progress.
-
-        Args:
-            report_name: Filename of the report (e.g., "analyst_1_v2.md")
-            iteration_type: "analyst_report" or "director_feedback" or "source_scout"
-            focus: Brief description of iteration focus
-            sources_added: Number of sources added this iteration
-            thesis_points_added: List of thesis point IDs added
-            action_items: List of outstanding action items
-            analyst_id: Analyst ID (required for analyst_report type)
-        """
-        data = self.load_source_file()
-
-        # Ensure research_context exists
-        if "research_context" not in data:
-            data["research_context"] = {
-                "thesis_points": [],
-                "key_debates": [],
-                "research_iterations": [],
-            }
-
-        iteration_entry = {
-            "report": report_name,
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "type": iteration_type,
-            "focus": focus,
-            "sources_added": sources_added,
-            "thesis_points_added": thesis_points_added or [],
-            "action_items": action_items or [],
-        }
-
-        # Include analyst ID for analyst reports
-        if analyst_id and iteration_type == "analyst_report":
-            iteration_entry["analyst"] = analyst_id
-
-        data["research_context"]["research_iterations"].append(iteration_entry)
-        self.save_source_file(data)
-
-        logger.info(
-            f"Logged research iteration: {report_name} "
-            f"({iteration_type}, +{sources_added} sources)"
-        )
-
-    def archive_old_iterations(self, keep_latest: int = 2) -> Optional[Path]:
-        """
-        Move old iterations to archive, keeping only latest N active.
-
-        Prevents unbounded growth of research_iterations array.
-
-        Args:
-            keep_latest: Number of recent iterations to keep (default: 2)
-
-        Returns:
-            Path to archive file if archival occurred, None otherwise
-        """
-        data = self.load_source_file()
-        iterations = data.get("research_context", {}).get("research_iterations", [])
-
-        if len(iterations) <= keep_latest:
-            logger.debug(f"No archival needed: {len(iterations)} iterations <= {keep_latest}")
-            return None
-
-        # Split into archive and keep
-        to_archive = iterations[:-keep_latest]
-        to_keep = iterations[-keep_latest:]
-
-        # Build archive file path
-        archive_path = self.source_file_path.parent / f"{self.ticker}_archive.json"
-
-        # Load or create archive
-        archive_data: Dict[str, Any] = {"ticker": self.ticker, "archived_iterations": []}
-        if archive_path.exists():
-            try:
-                archive_data = json.loads(archive_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                logger.warning(f"Invalid archive JSON, starting fresh: {archive_path}")
-
-        # Append to archive
-        archive_data["archived_iterations"].extend(to_archive)
-        archive_data["last_archived"] = datetime.now().isoformat()
-        archive_data["total_archived"] = len(archive_data["archived_iterations"])
-
-        # Save archive
-        archive_path.write_text(
-            json.dumps(archive_data, indent=2, ensure_ascii=False),
-            encoding="utf-8"
-        )
-
-        # Update main file with only recent iterations
-        data["research_context"]["research_iterations"] = to_keep
-        self.save_source_file(data)
-
-        logger.info(
-            f"Archived {len(to_archive)} iterations to {archive_path.name}, "
-            f"keeping {len(to_keep)} active"
-        )
-        return archive_path
-
-    def get_thesis_points(self) -> List[Dict[str, Any]]:
-        """Get all thesis points from the source file."""
-        data = self.load_source_file()
-        return data.get("research_context", {}).get("thesis_points", [])
-
-    def get_key_debates(self) -> List[Dict[str, Any]]:
-        """Get all key debates from the source file."""
-        data = self.load_source_file()
-        return data.get("research_context", {}).get("key_debates", [])
-
-    def get_analyst_summaries(self) -> Optional[Dict[str, Any]]:
-        """
-        Load current analyst_summaries from webSource.json.
-
-        Returns:
-            Dict containing iteration, last_updated, and summaries list,
-            or None if not present.
-        """
-        data = self.load_source_file()
-        return data.get("research_context", {}).get("analyst_summaries")
-
-    def update_analyst_summaries(
-        self,
-        summaries: List[Dict[str, Any]],
+        scout_report_content: str,
         iteration: int,
-    ) -> bool:
+    ) -> int:
         """
-        Update analyst_summaries section in webSource.json.
+        Update webSource.json with sources from Source Scout (no LLM).
 
-        This replaces all summaries for the current iteration
-        (summaries are not appended across iterations).
+        Extracts sources directly from JSON block in Source Scout output,
+        or falls back to CitationExtractor for markdown links.
 
         Args:
-            summaries: List of analyst summary dicts with keys:
-                       type_id, type_name, position, target_price, summary
+            scout_report_content: The Source Scout report content (markdown with URLs)
             iteration: Current pipeline iteration (1-5)
 
         Returns:
-            True if update succeeded, False otherwise
+            Number of sources added (0 on error)
         """
+        import re
+
         try:
+            from citation_extractor import CitationExtractor
+        except ImportError:
+            from .citation_extractor import CitationExtractor
+
+        try:
+            self.clear_cache()
             data = self.load_source_file()
 
-            # Ensure research_context exists
-            if "research_context" not in data:
-                data["research_context"] = {
-                    "thesis_points": [],
-                    "key_debates": [],
-                    "research_iterations": [],
-                }
-
-            # Update analyst_summaries section
-            data["research_context"]["analyst_summaries"] = {
-                "iteration": iteration,
-                "last_updated": datetime.now().isoformat(),
-                "summaries": summaries,
+            # Track existing URLs for deduplication
+            existing_urls = {
+                self._normalize_url(s.get("url", ""))
+                for s in data.get("sources", [])
             }
 
-            self.save_source_file(data)
-            logger.info(
-                f"Updated analyst_summaries: {len(summaries)} summaries "
-                f"for iteration {iteration}"
+            # Find max source ID
+            max_id = 0
+            for src in data.get("sources", []):
+                if src.get("id", "").startswith("src_"):
+                    try:
+                        num = int(src["id"].replace("src_", ""))
+                        max_id = max(max_id, num)
+                    except ValueError:
+                        pass
+
+            sources_added = 0
+            extracted_sources: List[Dict[str, Any]] = []
+
+            # Strategy 1: Try to extract JSON from ## Source Additions block
+            json_match = re.search(
+                r'##\s*Source\s+Additions?\s*\n```(?:json)?\s*([\s\S]*?)```',
+                scout_report_content,
+                re.IGNORECASE
             )
-            return True
+            if json_match:
+                try:
+                    json_content = json_match.group(1).strip()
+                    parsed = json.loads(json_content)
+                    if isinstance(parsed, list):
+                        extracted_sources = parsed
+                    elif isinstance(parsed, dict) and "sources" in parsed:
+                        extracted_sources = parsed["sources"]
+                    logger.info(f"Extracted {len(extracted_sources)} sources from JSON block")
+                except json.JSONDecodeError as e:
+                    logger.warning(f"JSON parse failed in Source Additions: {e}")
+
+            # Strategy 2: Fall back to CitationExtractor for markdown links
+            if not extracted_sources:
+                extractor = CitationExtractor()
+                extraction = extractor.extract_from_report(
+                    scout_report_content,
+                    analyst_type_id=0,  # Source scout is not analyst-specific
+                    iteration=iteration,
+                )
+                extracted_sources = [
+                    {
+                        "url": src.url,
+                        "title": src.title,
+                        "type": src.source_type,
+                        "summary": src.summary or src.context,
+                    }
+                    for src in extraction.sources
+                ]
+                logger.info(f"Extracted {len(extracted_sources)} sources via CitationExtractor")
+
+            # Add sources to data
+            for source in extracted_sources:
+                url = source.get("url", "")
+                if not url:
+                    continue
+
+                normalized_url = self._normalize_url(url)
+                if normalized_url in existing_urls:
+                    continue
+
+                max_id += 1
+                source_entry = {
+                    "id": f"src_{max_id:03d}",
+                    "url": url,
+                    "title": source.get("title", "Untitled"),
+                    "type": source.get("type", "web"),
+                    "summary": source.get("summary", ""),
+                    "tags": source.get("tags", []),
+                    "added_at": datetime.now().isoformat(),
+                    "cited_by": ["source_scout"],
+                    "iteration": iteration,
+                    "verified": True,  # Web search = verified
+                }
+                data.setdefault("sources", []).append(source_entry)
+                existing_urls.add(normalized_url)
+                sources_added += 1
+
+            # Log the iteration
+            if "iterations" not in data:
+                data["iterations"] = []
+            data["iterations"].append({
+                "iteration": iteration,
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "sources_added": sources_added,
+                "type": "source_scout",
+            })
+
+            self.save_source_file(data)
+            logger.info(f"Source Scout update: +{sources_added} sources (iteration {iteration})")
+            return sources_added
 
         except Exception as e:
-            logger.error(f"Failed to update analyst_summaries: {e}")
-            return False
+            logger.error(f"Source Scout direct update failed: {e}", exc_info=True)
+            return 0
+
+    def update_citations_only(
+        self,
+        extractions: List[Dict[str, Any]],
+        iteration: int,
+    ) -> int:
+        """
+        Update webSource.json with extracted citations only (sources, no thesis_points).
+
+        This is a lightweight update that skips the source_summary_agent call.
+        Used when running citation extraction in parallel with RD reviews.
+        Does NOT generate analyst_summaries or extract thesis_points.
+        Thesis points are deferred to synthesis phase.
+
+        Args:
+            extractions: List of extraction dicts from CitationExtractor.to_dict()
+            iteration: Current pipeline iteration (1-5)
+
+        Returns:
+            Number of sources added (0 on error)
+        """
+        try:
+            self.clear_cache()
+            data = self.load_source_file()
+
+            # Diagnostic: log initial state
+            initial_source_count = len(data.get("sources", []))
+
+            # Track existing URLs for deduplication
+            existing_urls = {
+                self._normalize_url(s.get("url", ""))
+                for s in data.get("sources", [])
+            }
+
+            # Find max source ID
+            max_id = 0
+            for src in data.get("sources", []):
+                if src.get("id", "").startswith("src_"):
+                    try:
+                        num = int(src["id"].replace("src_", ""))
+                        max_id = max(max_id, num)
+                    except ValueError:
+                        pass
+
+            sources_added = 0
+            sources_attempted = 0
+            duplicates_skipped = 0
+
+            # Process each analyst's extractions (sources only, thesis deferred to synthesis)
+            for extraction in extractions:
+                analyst_type = extraction.get("analyst_type", 0)
+
+                # Add sources
+                for source in extraction.get("sources", []):
+                    url = source.get("url", "")
+                    sources_attempted += 1
+
+                    if not url:
+                        continue
+
+                    normalized_url = self._normalize_url(url)
+                    if normalized_url in existing_urls:
+                        duplicates_skipped += 1
+                        continue
+
+                    # Add new source
+                    max_id += 1
+                    source_entry = {
+                        "id": f"src_{max_id:03d}",
+                        "url": url,
+                        "title": source.get("title", "Untitled"),
+                        "type": source.get("type", "unknown"),
+                        "summary": source.get("summary", ""),
+                        "tags": [],
+                        "added_at": datetime.now().isoformat(),
+                        "cited_by": [f"analyst_{analyst_type}"],
+                        "iteration": iteration,
+                        "verified": False,  # Analyst citations = unverified (regex-extracted, not fetched)
+                    }
+                    data.setdefault("sources", []).append(source_entry)
+                    existing_urls.add(normalized_url)
+                    sources_added += 1
+
+            # Log the iteration (v4 schema uses top-level iterations)
+            if "iterations" not in data:
+                data["iterations"] = []
+            data["iterations"].append({
+                "iteration": iteration,
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "sources_added": sources_added,
+                "type": "citation",
+            })
+
+            # Save with validation
+            self.save_source_file(data)
+
+            # Diagnostic logging
+            logger.info(
+                f"Citation update iter {iteration}: "
+                f"{len(extractions)} analysts processed, "
+                f"{sources_attempted} sources attempted, {sources_added} added, "
+                f"{duplicates_skipped} duplicates skipped. "
+                f"File: {initial_source_count} -> {len(data.get('sources', []))} sources"
+            )
+
+            return sources_added
+
+        except ValueError as e:
+            # Validation error from save_source_file - don't corrupt file
+            logger.error(
+                f"Citation extraction failed for iteration {iteration}: "
+                f"Validation error: {e}"
+            )
+            return 0
+
+        except Exception as e:
+            logger.error(
+                f"Citation extraction failed for iteration {iteration}: {e}",
+                exc_info=True
+            )
+            return 0

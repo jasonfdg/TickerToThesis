@@ -14,8 +14,6 @@ try:
         RD_REVIEW_ROLE_PATH,
         RD_SYNTHESIS_ROLE_PATH,
         MEMO_ENGINE_PATH,
-        SOURCE_SUMMARY_AGENT_PATH,
-        SOURCE_SUMMARY_AGENT_V2_PATH,
         HUMAN_READABLE_ENGINE_PATH,
         SOURCE_SCOUT_AGENT_PATH,
         INVESTING_TYPES,
@@ -27,8 +25,6 @@ except ImportError:
         RD_REVIEW_ROLE_PATH,
         RD_SYNTHESIS_ROLE_PATH,
         MEMO_ENGINE_PATH,
-        SOURCE_SUMMARY_AGENT_PATH,
-        SOURCE_SUMMARY_AGENT_V2_PATH,
         HUMAN_READABLE_ENGINE_PATH,
         SOURCE_SCOUT_AGENT_PATH,
         INVESTING_TYPES,
@@ -73,16 +69,6 @@ class PromptLoader:
     def memo_engine(self) -> str:
         """Load the buyside memo engine prompt."""
         return self._load_file(MEMO_ENGINE_PATH, "memo_engine")
-
-    @property
-    def source_summary_agent(self) -> str:
-        """Load the source summary agent prompt (v1)."""
-        return self._load_file(SOURCE_SUMMARY_AGENT_PATH, "source_summary_agent")
-
-    @property
-    def source_summary_agent_v2(self) -> str:
-        """Load the source summary agent v2 prompt (slim, structured input)."""
-        return self._load_file(SOURCE_SUMMARY_AGENT_V2_PATH, "source_summary_agent_v2")
 
     @property
     def human_readable_engine(self) -> str:
@@ -136,8 +122,6 @@ class PromptLoader:
             "rd_review_role": self.rd_review_role,
             "rd_synthesis_role": self.rd_synthesis_role,
             "memo_engine": self.memo_engine,
-            "source_summary_agent": self.source_summary_agent,
-            "source_summary_agent_v2": self.source_summary_agent_v2,
             "human_readable_engine": self.human_readable_engine,
             "source_scout_agent": self.source_scout_agent,
         }

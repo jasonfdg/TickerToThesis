@@ -16,7 +16,7 @@ import random
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import anthropic
 
@@ -119,23 +119,29 @@ class ProviderHealth:
 
 
 class ProviderHealthTracker:
-    """Tracks provider health and suggests fallbacks.
-
-    Manages rate limit cooldowns and provides intelligent fallback
-    suggestions when providers become unavailable.
+    """Circular fallback with loop counting.
 
     Fallback strategy:
-    - Claude CLI is the primary fallback for ALL providers (unlimited with Max subscription)
-    - Claude API is the last resort (only when CLI fails)
-    - OpenAI/Gemini are NOT fallbacks for each other
+    - Primary circular chain: claude-cli → gemini → openai → claude-cli → ...
+    - After 3 complete loops, falls back to Claude API (Sonnet) as last resort
+    - This maximizes use of free/cheap providers before expensive Claude API
+
+    Preserved routing (not part of circular chain):
+    - Perplexity for source_scout (web search)
+    - GPT-4o-mini for source_summary (best JSON validity)
     """
 
-    # Fallback priority: CLI first (unlimited), then Claude API as last resort
-    # OpenAI and Gemini are intentionally excluded - they fall back to Claude CLI only
-    FALLBACK_CHAIN = ["claude", "claude-cli"]
+    # Primary providers for circular fallback
+    CIRCULAR_CHAIN = ["claude-cli", "gemini", "openai"]
+
+    # Last resort after 3 loops (expensive)
+    LAST_RESORT = ("claude", "sonnet")
+
+    MAX_LOOPS = 3
 
     def __init__(self):
         self._health: Dict[str, ProviderHealth] = defaultdict(ProviderHealth)
+        self._loop_counts: Dict[str, int] = defaultdict(int)  # Per-call loop tracking
 
     def mark_rate_limited(self, provider: str, retry_after: Optional[float] = None):
         """Mark a provider as rate-limited with optional cooldown from API."""
@@ -151,57 +157,73 @@ class ProviderHealthTracker:
         """Mark a failed call (non-rate-limit error)."""
         self._health[provider].consecutive_failures += 1
 
-    def get_fallback(self, failed_provider: str, model: str) -> Optional[Tuple[str, str]]:
-        """Get next available fallback provider and mapped model.
+    def get_next_provider(
+        self,
+        call_id: str,
+        current_provider: str,
+        current_model: str,
+        providers_tried: Set[str],
+    ) -> Tuple[str, str, bool, bool]:
+        """Get next provider in circular chain.
 
         Args:
-            failed_provider: The provider that just failed
-            model: The original model being used
+            call_id: Unique identifier for this call (for loop tracking)
+            current_provider: Provider that just failed
+            current_model: Model that was being used
+            providers_tried: Set of providers already tried this loop
 
         Returns:
-            Tuple of (fallback_provider, fallback_model) or None if exhausted
+            Tuple of (provider, model, is_last_resort, is_new_loop)
         """
-        for provider in self.FALLBACK_CHAIN:
-            if provider == failed_provider:
-                continue
-            if self._health[provider].is_available():
-                fallback_model = self._map_model(provider, model)
-                return provider, fallback_model
-        return None
+        # Handle providers in the circular chain
+        if current_provider in self.CIRCULAR_CHAIN:
+            idx = self.CIRCULAR_CHAIN.index(current_provider)
+            next_idx = (idx + 1) % len(self.CIRCULAR_CHAIN)
+            next_provider = self.CIRCULAR_CHAIN[next_idx]
+
+            # Check if we've completed a full loop (next provider already tried)
+            if next_provider in providers_tried:
+                self._loop_counts[call_id] += 1
+
+                if self._loop_counts[call_id] >= self.MAX_LOOPS:
+                    # 3 loops exhausted → last resort
+                    return self.LAST_RESORT[0], self.LAST_RESORT[1], True, False
+
+                # Signal new loop starting (caller should wait and clear providers_tried)
+                return next_provider, self._map_model(next_provider, current_model), False, True
+
+            return next_provider, self._map_model(next_provider, current_model), False, False
+
+        # Non-circular provider (perplexity, 4o-mini) → go to first in chain
+        return self.CIRCULAR_CHAIN[0], self._map_model(self.CIRCULAR_CHAIN[0], current_model), False, False
+
+    def reset_loop_count(self, call_id: str):
+        """Reset loop counter after successful call."""
+        self._loop_counts.pop(call_id, None)
+
+    def get_loop_count(self, call_id: str) -> int:
+        """Get current loop count for a call."""
+        return self._loop_counts.get(call_id, 0)
 
     def _map_model(self, provider: str, original_model: str) -> str:
-        """Map original model to equivalent for fallback provider.
+        """Map model to equivalent for target provider.
 
-        Args:
-            provider: Target fallback provider
-            original_model: Original model name/alias
-
-        Returns:
-            Equivalent model for the fallback provider
+        Uses capability tier matching:
+        - "mini"/"flash"/"haiku" models map to cheaper/faster tiers
+        - Other models map to standard tiers (sonnet/gpt-4o/gemini-2.5-pro)
         """
-        # Claude CLI uses same model names as Claude API
+        # Normalize to capability tier
+        original_lower = original_model.lower()
+        is_mini = "mini" in original_lower or "flash" in original_lower or "haiku" in original_lower
+
         if provider == "claude-cli":
-            if "sonnet" in original_model.lower():
-                return "sonnet"
-            if "opus" in original_model.lower():
-                return "opus"
-            if "haiku" in original_model.lower():
-                return "haiku"
-            return "sonnet"  # default
-
-        # Claude API
-        if provider == "claude":
-            if "gpt" in original_model.lower() or "gemini" in original_model.lower():
-                return "sonnet"  # Map other providers to sonnet
-            return original_model
-
-        # OpenAI
-        if provider == "openai":
-            return "gpt-4o"
-
-        # Gemini
-        if provider == "gemini":
-            return "gemini-2.5-pro"
+            return "haiku" if is_mini else "sonnet"
+        elif provider == "gemini":
+            return "gemini-2.5-flash" if is_mini else "gemini-2.5-pro"
+        elif provider == "openai":
+            return "gpt-4o-mini" if is_mini else "gpt-4o"
+        elif provider == "claude":
+            return "haiku" if is_mini else "sonnet"
 
         return original_model
 
@@ -224,7 +246,7 @@ class ProviderHealthTracker:
         """Get a summary of provider health status for logging."""
         now = datetime.now()
         summary = {}
-        for provider in self.FALLBACK_CHAIN:
+        for provider in self.CIRCULAR_CHAIN + [self.LAST_RESORT[0]]:
             health = self._health[provider]
             if health.is_rate_limited and health.rate_limit_until:
                 remaining = (health.rate_limit_until - now).total_seconds()
@@ -563,112 +585,127 @@ class MultiProviderRunner:
         return self._semaphores[provider]
 
     async def _make_api_call(self, call: AgentCall) -> Tuple[str, TokenUsage]:
-        """Make API call with automatic fallback on rate limits.
+        """Make API call with circular fallback on rate limits.
 
-        Never gives up - if all providers are rate-limited, waits and retries
-        until something works. This ensures the pipeline always completes.
+        Never gives up - cycles through providers in a circular chain:
+        claude-cli → gemini → openai → claude-cli → ...
 
-        Fallback chain: Primary Provider → Claude CLI → Other APIs → Wait → Retry
+        After 3 complete loops, falls back to Claude API (Sonnet) as last resort.
+        This maximizes use of free/cheap providers before expensive API calls.
         """
-        provider = call.provider or "claude"
+        provider = call.provider or "claude-cli"
         model = call.model or "sonnet"
-        original_provider, original_model = provider, model
+        call_id = call.identifier or str(id(call))
+
+        providers_tried_this_loop: Set[str] = set()
+        current_provider, current_model = provider, model
 
         while True:  # Persistent retry loop - never give up
-            providers_tried: set = set()
-            current_provider, current_model = original_provider, original_model
+            providers_tried_this_loop.add(current_provider)
 
-            while True:  # Inner loop: try all available providers
-                # Skip if already tried this provider in current round
-                if current_provider in providers_tried:
-                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
-                    if fallback and fallback[0] not in providers_tried:
-                        current_provider, current_model = fallback
-                        continue
-                    else:
-                        break  # Exhausted all options this round
+            # Skip if provider is in cooldown
+            if not self._health_tracker._health[current_provider].is_available():
+                logger.debug(f"Skipping {current_provider} (cooldown active)")
+                next_provider, next_model, is_last_resort, is_new_loop = self._health_tracker.get_next_provider(
+                    call_id, current_provider, current_model, providers_tried_this_loop
+                )
 
-                providers_tried.add(current_provider)
+                if is_new_loop:
+                    wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
+                    loop_num = self._health_tracker.get_loop_count(call_id) + 1
+                    logger.info(f"⏳ Starting loop {loop_num}/{self._health_tracker.MAX_LOOPS}, waiting {wait_time:.0f}s")
+                    await asyncio.sleep(wait_time)
+                    providers_tried_this_loop.clear()
 
-                # Check if provider is currently rate-limited
-                provider_health = self._health_tracker._health.get(current_provider)
-                if provider_health and not provider_health.is_available():
-                    logger.debug(f"Skipping {current_provider} (cooldown active)")
-                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
-                    if fallback and fallback[0] not in providers_tried:
-                        current_provider, current_model = fallback
-                        continue
-                    else:
-                        break
+                current_provider, current_model = next_provider, next_model
+                continue
 
-                try:
-                    semaphore = self._get_semaphore(current_provider)
-                    async with semaphore:
-                        response = await asyncio.wait_for(
-                            self.provider_factory.generate(
-                                provider_type=current_provider,
-                                model=current_model,
-                                system_prompt=call.system_prompt,
-                                user_prompt=call.user_prompt,
-                                max_tokens=self.config.max_tokens,
-                                temperature=self.config.temperature,
-                            ),
-                            timeout=self.config.single_call_timeout,
-                        )
-
-                    self._health_tracker.mark_success(current_provider)
-                    logger.info(
-                        f"✓ {call.identifier} via {current_provider}/{current_model} "
-                        f"({response.token_usage.input_tokens} in, {response.token_usage.output_tokens} out)"
+            try:
+                semaphore = self._get_semaphore(current_provider)
+                async with semaphore:
+                    response = await asyncio.wait_for(
+                        self.provider_factory.generate(
+                            provider_type=current_provider,
+                            model=current_model,
+                            system_prompt=call.system_prompt,
+                            user_prompt=call.user_prompt,
+                            max_tokens=self.config.max_tokens,
+                            temperature=self.config.temperature,
+                        ),
+                        timeout=self.config.single_call_timeout,
                     )
-                    return response.content, response.token_usage
 
-                except ProviderRateLimitError as e:
-                    self._health_tracker.mark_rate_limited(e.provider, e.retry_after)
-                    logger.warning(f"⚠ {e.provider} rate-limited, trying fallback...")
+                # Success - reset loop counter and mark success
+                self._health_tracker.reset_loop_count(call_id)
+                self._health_tracker.mark_success(current_provider)
+                logger.info(
+                    f"✓ {call.identifier} via {current_provider}/{current_model} "
+                    f"({response.token_usage.input_tokens} in, {response.token_usage.output_tokens} out)"
+                )
+                return response.content, response.token_usage
 
-                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
-                    if fallback and fallback[0] not in providers_tried:
-                        current_provider, current_model = fallback
-                        logger.info(f"↻ Falling back to {current_provider}/{current_model}")
-                        continue
-                    else:
-                        break  # No more fallbacks, will retry after wait
+            except ProviderRateLimitError as e:
+                self._health_tracker.mark_rate_limited(e.provider, e.retry_after)
 
-                except asyncio.TimeoutError as e:
-                    self._health_tracker.mark_failure(current_provider)
-                    logger.warning(f"✗ {current_provider} timeout for {call.identifier}")
+                next_provider, next_model, is_last_resort, is_new_loop = self._health_tracker.get_next_provider(
+                    call_id, current_provider, current_model, providers_tried_this_loop
+                )
 
-                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
-                    if fallback and fallback[0] not in providers_tried:
-                        current_provider, current_model = fallback
-                        logger.info(f"↻ Falling back to {current_provider}/{current_model}")
-                        continue
-                    else:
-                        break
+                if is_last_resort:
+                    logger.warning(f"⚠ 3 loops exhausted for {call.identifier}, using Claude API (last resort)")
+                elif is_new_loop:
+                    wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
+                    loop_num = self._health_tracker.get_loop_count(call_id) + 1
+                    logger.info(f"⏳ Starting loop {loop_num}/{self._health_tracker.MAX_LOOPS}, waiting {wait_time:.0f}s")
+                    await asyncio.sleep(wait_time)
+                    providers_tried_this_loop.clear()
+                else:
+                    logger.info(f"↻ {current_provider} rate-limited, trying {next_provider}")
 
-                except Exception as e:
-                    # Non-rate-limit error: mark failure but continue trying
-                    self._health_tracker.mark_failure(current_provider)
-                    logger.warning(f"✗ {current_provider} error: {e}")
+                current_provider, current_model = next_provider, next_model
 
-                    fallback = self._health_tracker.get_fallback(current_provider, current_model)
-                    if fallback and fallback[0] not in providers_tried:
-                        current_provider, current_model = fallback
-                        logger.info(f"↻ Falling back to {current_provider}/{current_model}")
-                        continue
-                    else:
-                        break
+            except asyncio.TimeoutError:
+                self._health_tracker.mark_failure(current_provider)
+                logger.warning(f"✗ {current_provider} timeout for {call.identifier}")
 
-            # All providers exhausted this round - wait and retry
-            wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
-            status = self._health_tracker.get_status_summary()
-            logger.warning(
-                f"⏳ All providers exhausted for {call.identifier}. "
-                f"Status: {status}. Waiting {wait_time:.0f}s before retry..."
-            )
-            await asyncio.sleep(wait_time)
-            # Loop continues - will retry all providers
+                next_provider, next_model, is_last_resort, is_new_loop = self._health_tracker.get_next_provider(
+                    call_id, current_provider, current_model, providers_tried_this_loop
+                )
+
+                if is_last_resort:
+                    logger.warning(f"⚠ 3 loops exhausted for {call.identifier}, using Claude API (last resort)")
+                elif is_new_loop:
+                    wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
+                    loop_num = self._health_tracker.get_loop_count(call_id) + 1
+                    logger.info(f"⏳ Starting loop {loop_num}/{self._health_tracker.MAX_LOOPS}, waiting {wait_time:.0f}s")
+                    await asyncio.sleep(wait_time)
+                    providers_tried_this_loop.clear()
+                else:
+                    logger.info(f"↻ {current_provider} timeout, trying {next_provider}")
+
+                current_provider, current_model = next_provider, next_model
+
+            except Exception as e:
+                # Non-rate-limit error: mark failure but continue trying
+                self._health_tracker.mark_failure(current_provider)
+                logger.warning(f"✗ {current_provider} error: {e}")
+
+                next_provider, next_model, is_last_resort, is_new_loop = self._health_tracker.get_next_provider(
+                    call_id, current_provider, current_model, providers_tried_this_loop
+                )
+
+                if is_last_resort:
+                    logger.warning(f"⚠ 3 loops exhausted for {call.identifier}, using Claude API (last resort)")
+                elif is_new_loop:
+                    wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
+                    loop_num = self._health_tracker.get_loop_count(call_id) + 1
+                    logger.info(f"⏳ Starting loop {loop_num}/{self._health_tracker.MAX_LOOPS}, waiting {wait_time:.0f}s")
+                    await asyncio.sleep(wait_time)
+                    providers_tried_this_loop.clear()
+                else:
+                    logger.info(f"↻ {current_provider} error, trying {next_provider}")
+
+                current_provider, current_model = next_provider, next_model
 
     async def run_single(self, call: AgentCall) -> AgentReport:
         """Run a single agent call using the appropriate provider."""

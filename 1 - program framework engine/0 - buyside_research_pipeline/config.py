@@ -7,7 +7,7 @@ Paths, constants, and settings for the TickerToThesis pipeline.
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 # =============================================================================
 # Dashboard Configuration
@@ -139,7 +139,7 @@ class PipelineConfig:
 # Multi-provider model configuration
 # Analyst type -> (provider, model) mapping
 # 3 Claude + 3 OpenAI (Gemini excluded from analyst roles)
-# NOTE: Iteration 1 uses GPT-4o-mini for all analysts (see agent_runner.py)
+# NOTE: Iteration 1 uses Gemini 2.5 Flash Lite for all analysts (fast exploration)
 ANALYST_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
     1: {"provider": "claude-cli", "model": "sonnet"},  # Quality Compounders
     2: {"provider": "claude-cli", "model": "sonnet"},  # Imaginative Growth
@@ -147,6 +147,17 @@ ANALYST_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
     4: {"provider": "openai", "model": "gpt-4o"},      # Deep Value
     5: {"provider": "openai", "model": "gpt-4o"},      # Event-Driven
     6: {"provider": "openai", "model": "gpt-4o"},      # Macro-Tactical
+}
+
+# Iteration 1 analyst routing: Split across 2 fast providers for parallelism
+# Gemini Flash Lite (1-3) + GPT-4o-mini (4-6) run in parallel
+ITERATION_1_ANALYST_CONFIG: Dict[int, Dict[str, str]] = {
+    1: {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    2: {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    3: {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+    4: {"provider": "openai", "model": "gpt-4o-mini"},
+    5: {"provider": "openai", "model": "gpt-4o-mini"},
+    6: {"provider": "openai", "model": "gpt-4o-mini"},
 }
 
 # RD Review routing by analyst type (3 Claude + 3 Gemini)
@@ -171,17 +182,48 @@ ROLE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
     "source_scout": {"provider": "perplexity", "model": "sonar"}, # Real web search
 }
 
-# Light mode: Use gpt-4o-mini for most agents (cheap + fast)
-# Exceptions: Perplexity for web search, Gemini for synthesis
+# Light mode: Split across 2 fast providers for parallel execution
+# Gemini Flash (1-3) + GPT-4o-mini (4-6)
 # Cost: ~$0.20/ticker vs ~$2.50/ticker for full mode
+LIGHT_MODE_ANALYST_CONFIG: Dict[int, Dict[str, str]] = {
+    1: {"provider": "gemini", "model": "gemini-2.5-flash"},
+    2: {"provider": "gemini", "model": "gemini-2.5-flash"},
+    3: {"provider": "gemini", "model": "gemini-2.5-flash"},
+    4: {"provider": "openai", "model": "gpt-4o-mini"},
+    5: {"provider": "openai", "model": "gpt-4o-mini"},
+    6: {"provider": "openai", "model": "gpt-4o-mini"},
+}
+
+LIGHT_MODE_RD_REVIEW_CONFIG: Dict[int, Dict[str, str]] = {
+    1: {"provider": "gemini", "model": "gemini-2.5-flash"},
+    2: {"provider": "gemini", "model": "gemini-2.5-flash"},
+    3: {"provider": "gemini", "model": "gemini-2.5-flash"},
+    4: {"provider": "openai", "model": "gpt-4o-mini"},
+    5: {"provider": "openai", "model": "gpt-4o-mini"},
+    6: {"provider": "openai", "model": "gpt-4o-mini"},
+}
+
+# Keep role-based config for non-analyst/RD components
 LIGHT_MODE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
-    "analyst": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    "rd_review": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    "source_summary": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    "human_readable": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
-    # Keep these on premium providers:
+    "source_summary": {"provider": "openai", "model": "gpt-4o-mini"},
+    "human_readable": {"provider": "gemini", "model": "gemini-2.5-flash"},
     "source_scout": {"provider": "perplexity", "model": "sonar"},
     "rd_synthesis": {"provider": "gemini", "model": "gemini-2.5-pro"},
+}
+
+# Light mode fallback chain (used when primary provider is rate-limited)
+# Loops back with increasing backoff: 15s → 30s → 60s
+LIGHT_MODE_FALLBACK_CHAIN: List[Tuple[str, str]] = [
+    ("gemini", "gemini-2.5-flash"),
+    ("openai", "gpt-4o-mini"),
+]
+
+# Light mode timing optimizations (faster providers need less delay)
+LIGHT_MODE_DELAYS: Dict[str, float] = {
+    "stagger_delay": 0.5,      # Seconds between parallel calls (vs 2.0s full mode)
+    "loop_wait_base": 15.0,    # Base wait when all providers rate-limited (vs 30s)
+    "loop_wait_max": 60.0,     # Max wait during fallback loop (vs 120s)
+    "sequential_delay": 2.0,   # Delay between sequential calls (vs 5.0s)
 }
 
 
@@ -248,18 +290,22 @@ def get_effective_provider(
         override = COMPONENT_OVERRIDES[component]
         return override["provider"], override["model"]
 
-    # 2. Light mode: check LIGHT_MODE_PROVIDER_CONFIG first
+    # 2. Light mode: use per-type configs for analysts/RD reviews
     if effective_pipeline_mode == "light":
-        # Determine component type for light mode lookup
         if component.startswith("analyst_"):
-            light_config = LIGHT_MODE_PROVIDER_CONFIG.get("analyst")
+            type_id = int(component.split("_")[1])
+            config = LIGHT_MODE_ANALYST_CONFIG.get(type_id)
+            if config:
+                return config["provider"], config["model"]
         elif component.startswith("rd_review_"):
-            light_config = LIGHT_MODE_PROVIDER_CONFIG.get("rd_review")
+            type_id = int(component.split("_")[2])
+            config = LIGHT_MODE_RD_REVIEW_CONFIG.get(type_id)
+            if config:
+                return config["provider"], config["model"]
         else:
             light_config = LIGHT_MODE_PROVIDER_CONFIG.get(component)
-
-        if light_config:
-            return light_config["provider"], light_config["model"]
+            if light_config:
+                return light_config["provider"], light_config["model"]
 
     # 3. Determine default provider based on component type (full mode)
     default_provider = None
@@ -268,10 +314,11 @@ def get_effective_provider(
     # Parse component to determine type
     if component.startswith("analyst_"):
         type_id = int(component.split("_")[1])
-        # Iteration 1 uses GPT-4o-mini for all analysts
+        # Iteration 1 uses split providers for parallelism
         if iteration == 1:
-            default_provider = "openai"
-            default_model = "gpt-4o-mini"
+            config = ITERATION_1_ANALYST_CONFIG.get(type_id, {})
+            default_provider = config.get("provider", "gemini")
+            default_model = config.get("model", "gemini-2.5-flash-lite")
         else:
             config = ANALYST_PROVIDER_CONFIG.get(type_id, {})
             default_provider = config.get("provider", "claude")

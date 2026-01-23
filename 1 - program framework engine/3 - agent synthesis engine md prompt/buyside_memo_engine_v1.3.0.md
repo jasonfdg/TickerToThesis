@@ -44,7 +44,26 @@
 11. Kill conditions (explicit "exit if")
 12. Actionable timing (entry strategy)
 
-**Benchmarks:** 20,000-30,000 chars optimal (4000-5000 words). Target score >7.0.
+**Benchmarks:**
+- **Total Report:** 20,000-30,000 characters (including RD Response & Sources)
+- **Body Content (CRITICAL):** 12,000-20,000 characters of substantive analysis
+  - Body = everything from first `#` header after RD Response to Sources table
+  - For v1 reports: Body = entire report minus Sources table
+  - **This is non-negotiable**—compressed bodies (<12K chars) cannot achieve >7.0 scores
+- Target score: >7.0
+
+**Body Content Self-Check:**
+Before finalizing, verify your analytical body contains 12,000+ characters. If short, your report lacks institutional depth. Expand:
+- Each key force needs 2,000-3,000 characters of evidence-backed analysis
+- Valuation section needs full sensitivity table + methodology (2,000+ chars)
+- Variant view needs complete evidence chain (1,500+ chars)
+- Risks section needs 3+ quantified risks with specific kill conditions (1,500+ chars)
+
+**Anti-Pattern Examples:**
+- Business Quality section under 500 words → insufficient competitive analysis
+- Valuation with only one method and no sensitivity → unrigorous
+- Kill conditions like "revenue declines" without thresholds → unspecific
+- Variant view stated without evidence chain → unsubstantiated
 
 ### Evidence Hierarchy (The Differentiator)
 
@@ -74,6 +93,8 @@
 | Total Sources | 8-10+ | Comprehensive research coverage |
 
 Each primary source must be formatted as a quote block with attribution. If fewer than 3 primary sources, explicitly acknowledge the gap and request Source Scout follow-up. Fewer than 3 caps Evidence Quality at 6.
+
+**CRITICAL — NEVER FABRICATE QUOTES:** Only use quotes that actually exist in source materials. Do not invent, simulate, or create hypothetical quotes attributed to executives, analysts, or any source. If you cannot find a real quote, paraphrase and cite without quotation marks. Fabricated quotes are grounds for memo rejection.
 
 ---
 
@@ -227,8 +248,9 @@ Each primary source must be formatted as a quote block with attribution. If fewe
 4. Primary source cited? → If no, flag for Source Scout follow-up and acknowledge ceiling
 5. Probabilities grounded? → If no, use qualitative
 6. What news would trigger action today? → If nothing, low conviction
+7. Body content ≥12,000 characters? → If no, expand analysis depth (see Benchmarks)
 
-**Minimum passing: 4/6. Target: 6/6.**
+**Minimum passing: 5/7. Target: 7/7.**
 
 **Phase 6: Source Documentation (REQUIRED)**
 

@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from dashboard.emitter import ProgressEmitter
     from dashboard.server import DashboardServer
+    from stock_data import StockData
 
 # Load .env file from project root or pipeline directory
 from dotenv import load_dotenv
@@ -115,6 +116,9 @@ class TickerToThesisPipeline:
             ticker=self.ticker,
             preliminary_thinking=self.preliminary_thinking,
         )
+
+        # Cached stock data for ground truth injection into prompts
+        self.stock_data: Optional["StockData"] = None
 
         # Initialize progress tracker with optional dashboard emitter
         self.progress = ProgressTracker(
@@ -272,9 +276,25 @@ class TickerToThesisPipeline:
 
         return "\n".join(lines)
 
+    def _get_market_data_injection(self) -> str:
+        """Get market data block for prompt injection."""
+        if self.stock_data:
+            return self.stock_data.get_ground_truth_block()
+        return ""
+
+    def _get_market_system_instruction(self) -> str:
+        """Get system instruction for market data compliance."""
+        if self.stock_data:
+            return self.stock_data.get_system_instruction()
+        return ""
+
     def _build_analyst_system_prompt(self, type_id: int) -> str:
         """Build the system prompt for an analyst agent."""
-        return f"""{self.prompt_loader.analyst_role}
+        market_instruction = self._get_market_system_instruction()
+
+        return f"""{market_instruction}
+
+{self.prompt_loader.analyst_role}
 
 ---
 
@@ -297,7 +317,11 @@ class TickerToThesisPipeline:
         else:
             source_content = self.source_manager.get_source_content()
 
+        market_data = self._get_market_data_injection()
+
         return f"""**Analysis Date: {datetime.now().strftime("%B %d, %Y")}**
+
+{market_data}
 
 ## Task: Initial Analysis of {self.ticker}
 
@@ -311,10 +335,11 @@ class TickerToThesisPipeline:
 
 ### Instructions
 1. Analyze {self.ticker} through your {self.prompt_loader.investing_type_name(type_id)} lens
-2. Form a conviction-driven thesis - take a position
-3. Follow the memo engine structure precisely
-4. Cite sources from the source file AND conduct your own research
-5. Include the Sources Used table at the end
+2. **Use the VERIFIED market data above** for all price/valuation metrics
+3. Form a conviction-driven thesis - take a position
+4. Follow the memo engine structure precisely
+5. Cite sources from the source file AND conduct your own research
+6. Include the Sources Used table at the end
 
 This is iteration 1. Be bold. Form your initial view.
 """
@@ -334,7 +359,11 @@ This is iteration 1. Be bold. Form your initial view.
         else:
             source_content = self.source_manager.get_source_content()
 
+        market_data = self._get_market_data_injection()
+
         return f"""**Analysis Date: {datetime.now().strftime("%B %d, %Y")}**
+
+{market_data}
 
 ## Task: Refine Your Analysis of {self.ticker} (Iteration {iteration})
 
@@ -389,7 +418,11 @@ Remember: A memo without a position is noise. Refine, don't retreat.
 
     def _build_rd_review_system_prompt(self) -> str:
         """Build the system prompt for RD review agent."""
-        return f"""{self.prompt_loader.rd_review_role}
+        market_instruction = self._get_market_system_instruction()
+
+        return f"""{market_instruction}
+
+{self.prompt_loader.rd_review_role}
 
 ---
 
@@ -466,7 +499,11 @@ Complete this assessment:
 
 """
 
+        market_data = self._get_market_data_injection()
+
         base_instructions = f"""**Analysis Date: {datetime.now().strftime("%B %d, %Y")}**
+
+{market_data}
 
 ## Task: Review {type_name} Analysis of {self.ticker} (Iteration {iteration})
 {cross_analyst_section}
@@ -486,7 +523,11 @@ Your job is to sharpen, not to kill. Make this analyst better.
 
     def _build_rd_synthesis_system_prompt(self) -> str:
         """Build the system prompt for RD synthesis."""
-        return f"""{self.prompt_loader.rd_synthesis_role}
+        market_instruction = self._get_market_system_instruction()
+
+        return f"""{market_instruction}
+
+{self.prompt_loader.rd_synthesis_role}
 
 ---
 
@@ -554,7 +595,11 @@ You MUST address each key debate in your synthesis.
 
 """
 
+        market_data = self._get_market_data_injection()
+
         return f"""## Task: Synthesize Final Investment View on {self.ticker}
+
+{market_data}
 
 You have received final reports from 6 analysts, each with a distinct investing philosophy.
 Your job is to synthesize these into a single, decision-grade investment memo.
@@ -997,6 +1042,9 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
                 f"yfinance fetch failed for {self.ticker}, skipping initial data"
             )
             return
+
+        # Store for prompt building (ground truth injection)
+        self.stock_data = stock_data
 
         # Log key metrics
         price_str = f"${stock_data.current_price:.2f}" if stock_data.current_price else "N/A"

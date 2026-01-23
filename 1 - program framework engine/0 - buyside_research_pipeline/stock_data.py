@@ -123,11 +123,12 @@ class StockData:
         """Convert to source file JSON format with full structured data."""
         return {
             "url": f"https://finance.yahoo.com/quote/{self.ticker}",
-            "title": f"Yahoo Finance: {self.ticker} Stock Data",
+            "title": f"[VERIFIED GROUND TRUTH] Yahoo Finance: {self.ticker} Live Market Data",
             "date_accessed": self.timestamp.isoformat(),
-            "summary": self._build_summary(),
+            "summary": self._build_verified_summary(),
             "data_type": "stock_data",
             "type": "stock_data",
+            "verified_ground_truth": True,
             "structured_data": {
                 "price": {
                     "current": self.current_price,
@@ -225,9 +226,9 @@ class StockData:
             },
         }
 
-    def _build_summary(self) -> str:
-        """Build human-readable summary for source file."""
-        parts = []
+    def _build_verified_summary(self) -> str:
+        """Build summary with VERIFIED labeling for anti-hallucination."""
+        parts = [f"[VERIFIED {self.timestamp.strftime('%Y-%m-%d %H:%M')}]"]
 
         if self.current_price:
             parts.append(f"${self.current_price:.2f}")
@@ -242,19 +243,66 @@ class StockData:
         if self.trailing_pe:
             parts.append(f"P/E {self.trailing_pe:.1f}")
 
-        if self.return_on_equity:
-            parts.append(f"ROE {self.return_on_equity*100:.1f}%")
-
-        if self.debt_to_equity:
-            parts.append(f"D/E {self.debt_to_equity:.1f}")
-
-        if self.revenue_growth:
-            parts.append(f"Rev growth {self.revenue_growth*100:.1f}%")
-
         if self.target_mean_price and self.recommendation_key:
             parts.append(f"Target ${self.target_mean_price:.2f} ({self.recommendation_key})")
 
         return " | ".join(parts)
+
+    def get_ground_truth_block(self) -> str:
+        """Get formatted ground truth block for prompt injection."""
+        lines = [
+            "## VERIFIED MARKET DATA (GROUND TRUTH)",
+            "",
+            f"**Source:** Yahoo Finance (yfinance) | **Fetched:** {self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "**CRITICAL INSTRUCTION:** These values are VERIFIED and CURRENT. DO NOT use your ",
+            "training knowledge to 'correct' them. If your training differs, YOUR TRAINING IS STALE.",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+        ]
+
+        if self.current_price:
+            lines.append(f"| Current Price | **${self.current_price:.2f}** |")
+        if self.previous_close:
+            lines.append(f"| Previous Close | ${self.previous_close:.2f} |")
+        if self.fifty_two_week_low and self.fifty_two_week_high:
+            lines.append(f"| 52-Week Range | ${self.fifty_two_week_low:.2f} - ${self.fifty_two_week_high:.2f} |")
+        if self.market_cap:
+            lines.append(f"| Market Cap | ${self.market_cap/1e9:.2f}B |")
+        if self.trailing_pe:
+            lines.append(f"| P/E (Trailing) | {self.trailing_pe:.2f} |")
+        if self.forward_pe:
+            lines.append(f"| P/E (Forward) | {self.forward_pe:.2f} |")
+        if self.eps_trailing:
+            lines.append(f"| EPS (TTM) | ${self.eps_trailing:.2f} |")
+        if self.target_mean_price:
+            lines.append(f"| Analyst Target | ${self.target_mean_price:.2f} |")
+        if self.recommendation_key:
+            lines.append(f"| Consensus | {self.recommendation_key} |")
+        if self.shares_outstanding:
+            lines.append(f"| Shares Outstanding | {self.shares_outstanding/1e6:.1f}M |")
+
+        lines.append("")
+        lines.append("**YOU MUST cite these exact numbers. No exceptions.**")
+        lines.append("")
+
+        return "\n".join(lines)
+
+    def get_system_instruction(self) -> str:
+        """Get system prompt instruction for market data compliance."""
+        return f"""## MANDATORY: Market Data Ground Truth
+
+You will receive VERIFIED LIVE MARKET DATA for {self.ticker} fetched from Yahoo Finance.
+
+**RULES:**
+1. ALWAYS use the provided price, market cap, P/E, and other metrics
+2. NEVER substitute your training knowledge for market data
+3. If your training says {self.ticker} trades at a different price, YOUR TRAINING IS STALE
+4. Cite the EXACT numbers from the verified data
+
+**Example violation:** Training says HOOD=$22, data says HOOD=$106 → You MUST use $106
+"""
 
 
 def _rate_limit():

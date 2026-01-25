@@ -1,0 +1,343 @@
+<!--
+Ghost Code Injection - Ticker Request Feature
+Copy everything below into: Ghost Admin → Settings → Code injection → Site Footer
+
+IMPORTANT: Update TICKER_REQUEST_URL to your server's public URL (e.g., ngrok or deployed server)
+-->
+
+<style>
+/* Floating Request Button */
+.ticker-request-btn {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #fff;
+    border: none;
+    border-radius: 50px;
+    padding: 14px 24px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    z-index: 9999;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ticker-request-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 25px rgba(0,0,0,0.4);
+}
+
+.ticker-request-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* Modal Overlay */
+.ticker-modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+    z-index: 10000;
+    justify-content: center;
+    align-items: center;
+}
+
+.ticker-modal-overlay.active {
+    display: flex;
+}
+
+/* Modal Content */
+.ticker-modal {
+    background: #fff;
+    border-radius: 16px;
+    padding: 32px;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    animation: modalSlide 0.3s ease;
+}
+
+@keyframes modalSlide {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.ticker-modal h3 {
+    margin: 0 0 8px 0;
+    font-size: 22px;
+    color: #1a1a2e;
+}
+
+.ticker-modal p {
+    margin: 0 0 24px 0;
+    color: #666;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+/* Input with $ prefix */
+.ticker-input-wrapper {
+    display: flex;
+    align-items: center;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+    margin-bottom: 20px;
+}
+
+.ticker-input-wrapper:focus-within {
+    border-color: #1a1a2e;
+}
+
+.ticker-prefix {
+    background: #f5f5f5;
+    color: #1a1a2e;
+    font-size: 18px;
+    font-weight: 700;
+    padding: 12px 12px 12px 16px;
+    border-right: 2px solid #e0e0e0;
+    user-select: none;
+}
+
+.ticker-input {
+    flex: 1;
+    border: none;
+    outline: none;
+    font-size: 18px;
+    font-weight: 600;
+    padding: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.ticker-input::placeholder {
+    color: #bbb;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+/* Buttons */
+.ticker-modal-buttons {
+    display: flex;
+    gap: 12px;
+}
+
+.ticker-submit-btn {
+    flex: 1;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 14px 24px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.ticker-submit-btn:hover {
+    opacity: 0.9;
+}
+
+.ticker-submit-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.ticker-cancel-btn {
+    background: #f5f5f5;
+    color: #666;
+    border: none;
+    border-radius: 8px;
+    padding: 14px 24px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.ticker-cancel-btn:hover {
+    background: #eee;
+}
+
+/* Success/Error states */
+.ticker-message {
+    text-align: center;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    display: none;
+}
+
+.ticker-message.success {
+    display: block;
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.ticker-message.error {
+    display: block;
+    background: #ffebee;
+    color: #c62828;
+}
+</style>
+
+<script>
+(function() {
+    // CONFIGURATION - Update this URL to your server's public address
+    const TICKER_REQUEST_URL = 'http://localhost:5050/api/ticker-request';
+
+    // Check if user is logged in (Ghost member)
+    function isMember() {
+        // Ghost sets a cookie for logged-in members
+        return document.cookie.includes('ghost-members-ssr') ||
+               document.querySelector('[data-portal="account"]') !== null;
+    }
+
+    // Only show for members
+    if (!isMember()) {
+        return;
+    }
+
+    // Create floating button
+    const btn = document.createElement('button');
+    btn.className = 'ticker-request-btn';
+    btn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+        </svg>
+        Request Ticker
+    `;
+    document.body.appendChild(btn);
+
+    // Create modal
+    const modal = document.createElement('div');
+    modal.className = 'ticker-modal-overlay';
+    modal.innerHTML = `
+        <div class="ticker-modal">
+            <h3>Request a Ticker</h3>
+            <p>Enter a ticker symbol you'd like us to analyze. Popular requests get prioritized!</p>
+            <div class="ticker-message"></div>
+            <div class="ticker-input-wrapper">
+                <span class="ticker-prefix">$</span>
+                <input type="text" class="ticker-input" placeholder="AAPL" maxlength="5" autocomplete="off">
+            </div>
+            <div class="ticker-modal-buttons">
+                <button class="ticker-cancel-btn">Cancel</button>
+                <button class="ticker-submit-btn">Submit Request</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Elements
+    const input = modal.querySelector('.ticker-input');
+    const submitBtn = modal.querySelector('.ticker-submit-btn');
+    const cancelBtn = modal.querySelector('.ticker-cancel-btn');
+    const message = modal.querySelector('.ticker-message');
+
+    // Open modal
+    btn.addEventListener('click', function() {
+        modal.classList.add('active');
+        input.value = '';
+        message.className = 'ticker-message';
+        message.textContent = '';
+        input.focus();
+    });
+
+    // Close modal
+    function closeModal() {
+        modal.classList.remove('active');
+    }
+
+    cancelBtn.addEventListener('click', closeModal);
+
+    modal.addEventListener('click', function(e) {
+        if (e.target === modal) {
+            closeModal();
+        }
+    });
+
+    // Handle escape key
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && modal.classList.contains('active')) {
+            closeModal();
+        }
+    });
+
+    // Handle enter key in input
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            submitBtn.click();
+        }
+    });
+
+    // Submit request
+    submitBtn.addEventListener('click', async function() {
+        const ticker = input.value.trim().toUpperCase();
+
+        if (!ticker) {
+            message.className = 'ticker-message error';
+            message.textContent = 'Please enter a ticker symbol';
+            return;
+        }
+
+        if (!/^[A-Z0-9]{1,5}$/.test(ticker)) {
+            message.className = 'ticker-message error';
+            message.textContent = 'Invalid ticker format (1-5 letters/numbers)';
+            return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting...';
+
+        try {
+            const response = await fetch(TICKER_REQUEST_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ ticker: ticker })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                message.className = 'ticker-message success';
+                message.textContent = `Thanks! $${ticker} has been requested ${data.count} time${data.count > 1 ? 's' : ''}.`;
+                input.value = '';
+
+                // Close after 2 seconds
+                setTimeout(closeModal, 2000);
+            } else {
+                throw new Error(data.error || 'Request failed');
+            }
+        } catch (error) {
+            message.className = 'ticker-message error';
+            message.textContent = 'Request failed. Please try again.';
+            console.error('Ticker request error:', error);
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit Request';
+        }
+    });
+})();
+</script>

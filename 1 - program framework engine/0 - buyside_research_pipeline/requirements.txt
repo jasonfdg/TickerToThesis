@@ -16,6 +16,10 @@ tqdm>=4.66.0
 fastapi>=0.109.0
 uvicorn>=0.27.0
 
+# Ticker request server
+flask>=3.0.0
+flask-cors>=4.0.0
+
 # PDF generation (optional)
 weasyprint>=60.0
 

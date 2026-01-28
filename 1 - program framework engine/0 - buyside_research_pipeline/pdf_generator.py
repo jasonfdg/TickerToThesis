@@ -173,13 +173,33 @@ class MemoPDFGenerator:
 
         return re.sub(sources_pattern, convert_table, content)
 
+    def _strip_frontmatter(self, content: str) -> str:
+        """Strip YAML frontmatter from markdown content.
+
+        Removes metadata blocks like:
+        ---
+        ticker: INTC
+        lang: EN
+        generated: 2026-01-24
+        ---
+        """
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                return parts[2].strip()
+        return content
+
     def _preprocess_markdown(self, content: str) -> str:
         """Preprocess markdown to fix common formatting issues.
 
+        - Strips YAML frontmatter
         - Ensures blank lines before list items that follow paragraphs
         - Converts Sources table to bullet points for smaller text
         - Normalizes line endings
         """
+        # Strip YAML frontmatter first
+        content = self._strip_frontmatter(content)
+
         # Convert Sources table to bullet point format
         content = self._convert_sources_table_to_bullets(content)
 

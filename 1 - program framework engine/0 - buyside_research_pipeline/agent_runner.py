@@ -23,7 +23,9 @@ import anthropic
 try:
     from .config import (
         PipelineConfig, ANALYST_PROVIDER_CONFIG, ROLE_PROVIDER_CONFIG,
-        COMPONENT_OVERRIDES, get_effective_provider
+        COMPONENT_OVERRIDES, get_effective_provider, get_pipeline_mode,
+        LIGHT_MODE_FALLBACK_CHAIN, LIGHT_MODE_DELAYS,
+        get_randomized_provider, get_fallback_chain,
     )
     from .models import AgentReport, AgentRole, TokenUsage
     from .providers import ProviderFactory, ProviderResponse
@@ -31,7 +33,9 @@ try:
 except ImportError:
     from config import (
         PipelineConfig, ANALYST_PROVIDER_CONFIG, ROLE_PROVIDER_CONFIG,
-        COMPONENT_OVERRIDES, get_effective_provider
+        COMPONENT_OVERRIDES, get_effective_provider, get_pipeline_mode,
+        LIGHT_MODE_FALLBACK_CHAIN, LIGHT_MODE_DELAYS,
+        get_randomized_provider, get_fallback_chain,
     )
     from models import AgentReport, AgentRole, TokenUsage
     from providers import ProviderFactory, ProviderResponse
@@ -66,13 +70,13 @@ class AgentCall:
             self._assign_provider_model()
 
     def _assign_provider_model(self):
-        """Auto-assign provider and model based on role configuration.
+        """Auto-assign provider and model using randomized 2-2-2 assignment.
 
         Priority order:
         1. Explicit provider/model set on AgentCall
         2. COMPONENT_OVERRIDES in config.py
-        3. PROVIDER_MODE substitution (api->cli for Claude)
-        4. Default routing from ANALYST_PROVIDER_CONFIG / ROLE_PROVIDER_CONFIG
+        3. Randomized 2-2-2 assignment for analysts and RD reviews
+        4. Default routing from ROLE_PROVIDER_CONFIG for other roles
         """
         # Build component identifier for override lookup
         if self.role == AgentRole.ANALYST and self.investing_type_id is not None:
@@ -82,14 +86,32 @@ class AgentCall:
         else:
             component = self.role.value  # e.g., "rd_synthesis", "source_scout"
 
-        # Check for override (respects COMPONENT_OVERRIDES and PROVIDER_MODE)
+        # Check for explicit override first
         if component in COMPONENT_OVERRIDES:
             override = COMPONENT_OVERRIDES[component]
             self.provider = self.provider or override["provider"]
             self.model = self.model or override["model"]
             return
 
-        # Use get_effective_provider which handles mode substitution
+        # Use randomized assignment for analysts
+        if self.role == AgentRole.ANALYST and self.investing_type_id is not None:
+            provider, model = get_randomized_provider(
+                self.investing_type_id, self.iteration, "analyst"
+            )
+            self.provider = self.provider or provider
+            self.model = self.model or model
+            return
+
+        # Use randomized assignment for RD reviews
+        if self.role == AgentRole.RD_REVIEW and self.investing_type_id is not None:
+            provider, model = get_randomized_provider(
+                self.investing_type_id, self.iteration, "rd_review"
+            )
+            self.provider = self.provider or provider
+            self.model = self.model or model
+            return
+
+        # Fallback to role-based config for other roles
         effective_provider, effective_model = get_effective_provider(component, self.iteration)
         self.provider = self.provider or effective_provider
         self.model = self.model or effective_model
@@ -119,29 +141,56 @@ class ProviderHealth:
 
 
 class ProviderHealthTracker:
-    """Circular fallback with loop counting.
+    """Circular fallback with configurable chain from config.py.
 
-    Fallback strategy:
-    - Primary circular chain: claude-cli → gemini → openai → claude-cli → ...
+    Fallback strategy (full mode):
+    - Chain: claude-cli → gemini 3 pro → gpt-4o → claude API
     - After 3 complete loops, falls back to Claude API (Sonnet) as last resort
     - This maximizes use of free/cheap providers before expensive Claude API
+
+    Fallback strategy (light mode):
+    - Chain: claude-cli → gemini flash → gpt-4o-mini → claude API
+    - Faster providers with shorter backoff delays
+    - Falls back to Claude API (Haiku) as last resort after 3 loops
 
     Preserved routing (not part of circular chain):
     - Perplexity for source_scout (web search)
     - GPT-4o-mini for source_summary (best JSON validity)
     """
 
-    # Primary providers for circular fallback
-    CIRCULAR_CHAIN = ["claude-cli", "gemini", "openai"]
-
-    # Last resort after 3 loops (expensive)
-    LAST_RESORT = ("claude", "sonnet")
-
     MAX_LOOPS = 3
 
-    def __init__(self):
+    def __init__(self, pipeline_mode: Optional[str] = None):
         self._health: Dict[str, ProviderHealth] = defaultdict(ProviderHealth)
         self._loop_counts: Dict[str, int] = defaultdict(int)  # Per-call loop tracking
+        self._pipeline_mode = pipeline_mode or get_pipeline_mode()
+        self._fallback_chain = get_fallback_chain(self._pipeline_mode)
+
+    @property
+    def CIRCULAR_CHAIN(self) -> List[str]:
+        """Get providers from fallback chain (excluding last resort)."""
+        return [p[0] for p in self._fallback_chain[:-1]]
+
+    @property
+    def LAST_RESORT(self) -> Tuple[str, str]:
+        """Get last resort provider/model."""
+        return self._fallback_chain[-1]
+
+    def get_loop_wait_time(self, loop_count: int) -> float:
+        """Get wait time for a fallback loop, respecting light mode optimization.
+
+        Light mode uses shorter delays since providers are faster.
+        """
+        if self._pipeline_mode == "light":
+            base = LIGHT_MODE_DELAYS.get("loop_wait_base", 15.0)
+            max_wait = LIGHT_MODE_DELAYS.get("loop_wait_max", 60.0)
+        else:
+            base = 30.0
+            max_wait = 120.0
+
+        # Exponential backoff: base * 2^loop_count, capped at max
+        wait_time = min(base * (2 ** loop_count), max_wait)
+        return wait_time
 
     def mark_rate_limited(self, provider: str, retry_after: Optional[float] = None):
         """Mark a provider as rate-limited with optional cooldown from API."""
@@ -206,20 +255,24 @@ class ProviderHealthTracker:
         return self._loop_counts.get(call_id, 0)
 
     def _map_model(self, provider: str, original_model: str) -> str:
-        """Map model to equivalent for target provider.
+        """Map to correct model from fallback chain.
 
-        Uses capability tier matching:
-        - "mini"/"flash"/"haiku" models map to cheaper/faster tiers
-        - Other models map to standard tiers (sonnet/gpt-4o/gemini-2.5-pro)
+        First checks fallback chain for the target provider, then falls back
+        to tier matching if provider isn't in chain.
         """
-        # Normalize to capability tier
+        # First, try to get model from fallback chain
+        for p, m in self._fallback_chain:
+            if p == provider:
+                return m
+
+        # Fallback to tier matching for providers not in chain
         original_lower = original_model.lower()
         is_mini = "mini" in original_lower or "flash" in original_lower or "haiku" in original_lower
 
         if provider == "claude-cli":
             return "haiku" if is_mini else "sonnet"
         elif provider == "gemini":
-            return "gemini-2.5-flash" if is_mini else "gemini-2.5-pro"
+            return "gemini-2.5-flash" if is_mini else "gemini-3-pro-preview"
         elif provider == "openai":
             return "gpt-4o-mini" if is_mini else "gpt-4o"
         elif provider == "claude":
@@ -574,7 +627,8 @@ class MultiProviderRunner:
         self.config = config or PipelineConfig()
         self.provider_factory = ProviderFactory()
         self._semaphores: Dict[str, asyncio.Semaphore] = {}
-        self._health_tracker = ProviderHealthTracker()
+        # Pass pipeline mode to health tracker for light mode optimization
+        self._health_tracker = ProviderHealthTracker(pipeline_mode=self.config.pipeline_mode)
 
     def _get_semaphore(self, provider: str) -> asyncio.Semaphore:
         """Get or create a rate-limiting semaphore for a provider."""
@@ -583,6 +637,24 @@ class MultiProviderRunner:
             # Allow concurrent requests up to half the rate limit
             self._semaphores[provider] = asyncio.Semaphore(max(1, rpm // 2))
         return self._semaphores[provider]
+
+    def _get_stagger_delay(self) -> float:
+        """Get the stagger delay for parallel calls based on pipeline mode.
+
+        Light mode uses shorter delays since providers are faster.
+        """
+        if self.config.pipeline_mode == "light":
+            return LIGHT_MODE_DELAYS.get("stagger_delay", 0.5)
+        return 2.0
+
+    def _get_sequential_delay(self) -> float:
+        """Get the delay between sequential calls based on pipeline mode.
+
+        Light mode uses shorter delays since providers are faster.
+        """
+        if self.config.pipeline_mode == "light":
+            return LIGHT_MODE_DELAYS.get("sequential_delay", 2.0)
+        return 5.0
 
     async def _make_api_call(self, call: AgentCall) -> Tuple[str, TokenUsage]:
         """Make API call with circular fallback on rate limits.
@@ -611,8 +683,10 @@ class MultiProviderRunner:
                 )
 
                 if is_new_loop:
-                    wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
                     loop_num = self._health_tracker.get_loop_count(call_id) + 1
+                    # Use mode-aware wait time (shorter for light mode)
+                    wait_time = self._health_tracker.get_shortest_cooldown() or \
+                                self._health_tracker.get_loop_wait_time(loop_num)
                     logger.info(f"⏳ Starting loop {loop_num}/{self._health_tracker.MAX_LOOPS}, waiting {wait_time:.0f}s")
                     await asyncio.sleep(wait_time)
                     providers_tried_this_loop.clear()
@@ -635,6 +709,33 @@ class MultiProviderRunner:
                         timeout=self.config.single_call_timeout,
                     )
 
+                # Check for empty response (Gemini sometimes returns 0 tokens)
+                if not response.content or response.token_usage.output_tokens == 0:
+                    logger.warning(
+                        f"⚠ {call.identifier} via {current_provider}/{current_model} returned empty response, "
+                        f"trying next provider"
+                    )
+                    self._health_tracker.mark_failure(current_provider)
+
+                    next_provider, next_model, is_last_resort, is_new_loop = self._health_tracker.get_next_provider(
+                        call_id, current_provider, current_model, providers_tried_this_loop
+                    )
+
+                    if is_last_resort:
+                        logger.warning(f"⚠ 3 loops exhausted for {call.identifier}, using Claude API (last resort)")
+                    elif is_new_loop:
+                        loop_num = self._health_tracker.get_loop_count(call_id) + 1
+                        wait_time = self._health_tracker.get_shortest_cooldown() or \
+                                    self._health_tracker.get_loop_wait_time(loop_num)
+                        logger.info(f"⏳ Starting loop {loop_num}/{self._health_tracker.MAX_LOOPS}, waiting {wait_time:.0f}s")
+                        await asyncio.sleep(wait_time)
+                        providers_tried_this_loop.clear()
+                    else:
+                        logger.info(f"↻ {current_provider} empty response, trying {next_provider}")
+
+                    current_provider, current_model = next_provider, next_model
+                    continue
+
                 # Success - reset loop counter and mark success
                 self._health_tracker.reset_loop_count(call_id)
                 self._health_tracker.mark_success(current_provider)
@@ -654,8 +755,9 @@ class MultiProviderRunner:
                 if is_last_resort:
                     logger.warning(f"⚠ 3 loops exhausted for {call.identifier}, using Claude API (last resort)")
                 elif is_new_loop:
-                    wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
                     loop_num = self._health_tracker.get_loop_count(call_id) + 1
+                    wait_time = self._health_tracker.get_shortest_cooldown() or \
+                                self._health_tracker.get_loop_wait_time(loop_num)
                     logger.info(f"⏳ Starting loop {loop_num}/{self._health_tracker.MAX_LOOPS}, waiting {wait_time:.0f}s")
                     await asyncio.sleep(wait_time)
                     providers_tried_this_loop.clear()
@@ -675,8 +777,9 @@ class MultiProviderRunner:
                 if is_last_resort:
                     logger.warning(f"⚠ 3 loops exhausted for {call.identifier}, using Claude API (last resort)")
                 elif is_new_loop:
-                    wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
                     loop_num = self._health_tracker.get_loop_count(call_id) + 1
+                    wait_time = self._health_tracker.get_shortest_cooldown() or \
+                                self._health_tracker.get_loop_wait_time(loop_num)
                     logger.info(f"⏳ Starting loop {loop_num}/{self._health_tracker.MAX_LOOPS}, waiting {wait_time:.0f}s")
                     await asyncio.sleep(wait_time)
                     providers_tried_this_loop.clear()
@@ -697,8 +800,9 @@ class MultiProviderRunner:
                 if is_last_resort:
                     logger.warning(f"⚠ 3 loops exhausted for {call.identifier}, using Claude API (last resort)")
                 elif is_new_loop:
-                    wait_time = self._health_tracker.get_shortest_cooldown() or 30.0
                     loop_num = self._health_tracker.get_loop_count(call_id) + 1
+                    wait_time = self._health_tracker.get_shortest_cooldown() or \
+                                self._health_tracker.get_loop_wait_time(loop_num)
                     logger.info(f"⏳ Starting loop {loop_num}/{self._health_tracker.MAX_LOOPS}, waiting {wait_time:.0f}s")
                     await asyncio.sleep(wait_time)
                     providers_tried_this_loop.clear()
@@ -828,14 +932,16 @@ class MultiProviderRunner:
             logger.info(f"Running {len(calls)} analysts in parallel ({provider_summary})")
 
             # Run each provider group with internal staggering
+            stagger = self._get_stagger_delay()
+
             async def run_provider_group(
                 provider: str, provider_calls: List[AgentCall]
             ) -> List[Tuple[str, AgentReport]]:
-                """Run calls for one provider with 2s stagger between each."""
+                """Run calls for one provider with stagger between each."""
                 results = []
                 for i, call in enumerate(provider_calls):
                     if i > 0:
-                        await asyncio.sleep(2.0)  # Stagger within provider
+                        await asyncio.sleep(stagger)  # Stagger within provider
                     report = await self.run_single(call)
                     results.append((call.identifier, report))
                 return results
@@ -864,8 +970,9 @@ class MultiProviderRunner:
                 for identifier, report in group_result:
                     results[identifier] = report
         else:
-            # Sequential fallback
-            results = await self._run_sequential(calls, delay_between=30.0)
+            # Sequential fallback - use mode-aware delay
+            seq_delay = self._get_sequential_delay()
+            results = await self._run_sequential(calls, delay_between=seq_delay)
 
         # Convert to type_id -> report mapping
         by_type: Dict[int, AgentReport] = {}
@@ -900,9 +1007,9 @@ class MultiProviderRunner:
             return {}
 
         if self.config.parallel_execution:
-            # Staggered parallel: all 6 in parallel with 2s delay between starts
+            # Staggered parallel: all 6 in parallel with delay between starts
             # This avoids burst rate limits while being much faster than batching
-            stagger_delay = 2.0  # seconds between each call start
+            stagger_delay = self._get_stagger_delay()
 
             logger.info(
                 f"Running {len(calls)} RD reviews in staggered parallel "
@@ -932,7 +1039,9 @@ class MultiProviderRunner:
                 identifier, report = result
                 results[identifier] = report
         else:
-            results = await self._run_sequential(calls, delay_between=30.0)
+            # Sequential fallback - use mode-aware delay
+            seq_delay = self._get_sequential_delay()
+            results = await self._run_sequential(calls, delay_between=seq_delay)
 
         # Convert to type_id -> report mapping
         by_type: Dict[int, AgentReport] = {}

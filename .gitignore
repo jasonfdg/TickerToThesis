@@ -5,6 +5,7 @@ cookies.json
 data/
 *.log
 .env
+5 - credentials/
 
 # Generated outputs
 2 - report output/

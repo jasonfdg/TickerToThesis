@@ -126,3 +126,30 @@ Output: ${TICKER}_memo_vF.md
 - Rate limiting: 50 RPM semaphore, 30-120s exponential backoff on 529 errors
 - Sequential execution with delays between calls (parallel execution disabled due to rate limits)
 - Expect ~1.7M tokens for full 5-iteration run (~$13-15 per ticker)
+
+## CRITICAL: Keeping resume_pipeline.py in Sync
+
+**Rule: When you modify `TickerToThesis.py`, also update `resume_pipeline.py`.**
+
+Both files must have identical:
+- Prompt structures (`_build_analyst_*_prompt`, `_build_rd_*_prompt`)
+- Provider/runner configuration (MultiProviderRunner, fallback chains)
+- Debate history integration (DebateHistoryManager)
+- Engagement assessment in RD prompts
+- Position extraction before synthesis
+- Synthesis prompt with accountability rules
+
+### Quick Sync Check
+```bash
+cd "1 - program framework engine/0 - buyside_research_pipeline"
+
+# Compare method signatures
+diff <(grep "def _build" TickerToThesis.py | sort) <(grep "def _build" resume_pipeline.py | sort)
+
+# Should show NO differences for core prompt builders
+```
+
+### Why This Matters
+- `resume_pipeline.py` is used when runs are interrupted (API failures, credit depletion)
+- If it drifts, resumed runs produce inconsistent outputs
+- Debate history, engagement assessment, and accountability rules must match

@@ -48,7 +48,8 @@ for _env_path in _env_locations:
 try:
     from .agent_runner import AgentCall, AgentRunner, MultiProviderRunner
     from .citation_extractor import CitationExtractor, extract_citations_from_reports
-    from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache, set_pipeline_mode
+    from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache, set_pipeline_mode, clear_iteration_assignments
+    from .debate_tracker import DebateHistoryManager
     from .models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from .prompt_loader import PromptLoader
     from .progress_tracker import ProgressTracker, PhaseType
@@ -58,7 +59,8 @@ try:
 except ImportError:
     from agent_runner import AgentCall, AgentRunner, MultiProviderRunner
     from citation_extractor import CitationExtractor, extract_citations_from_reports
-    from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache, set_pipeline_mode
+    from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache, set_pipeline_mode, clear_iteration_assignments
+    from debate_tracker import DebateHistoryManager
     from models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from prompt_loader import PromptLoader
     from progress_tracker import ProgressTracker, PhaseType
@@ -110,6 +112,12 @@ class TickerToThesisPipeline:
 
         self.source_manager = SourceManager(self.ticker, self.prompt_loader)
         self.report_saver = ReportSaver(self.ticker)
+
+        # Initialize debate history tracker for capturing analyst <-> RD evolution
+        self.debate_tracker = DebateHistoryManager(
+            ticker=self.ticker,
+            interim_dir=self.report_saver.output_dir / "interim",
+        )
 
         # Initialize state
         self.state = PipelineState(
@@ -310,10 +318,17 @@ This is iteration 1. Be bold. Form your initial view.
 
         market_data = self._get_market_data_injection()
 
+        # Get debate history for context (iterations 3+)
+        debate_history_md = ""
+        if iteration >= 3:
+            debate_history_md = self.debate_tracker.format_for_analyst_prompt(type_id)
+            if debate_history_md:
+                debate_history_md = f"\n{debate_history_md}\n---\n"
+
         return f"""**Analysis Date: {datetime.now().strftime("%B %d, %Y")}**
 
 {market_data}
-
+{debate_history_md}
 ## Task: Refine Your Analysis of {self.ticker} (Iteration {iteration})
 
 ### Your Previous Report (v{iteration - 1})
@@ -409,6 +424,18 @@ Remember: A memo without a position is noise. Refine, don't retreat.
 
 """
 
+        # Build debate history context section (iterations 3+)
+        debate_history_section = ""
+        if iteration >= 3:
+            debate_history_md = self.debate_tracker.format_for_rd_prompt(type_id)
+            if debate_history_md:
+                debate_history_section = f"""
+{debate_history_md}
+
+---
+
+"""
+
         # Build engagement assessment section for iterations 2+
         engagement_section = ""
         if iteration > 1 and previous_rd_feedback:
@@ -455,8 +482,7 @@ Complete this assessment:
 {market_data}
 
 ## Task: Review {type_name} Analysis of {self.ticker} (Iteration {iteration})
-{cross_analyst_section}
-### Analyst Report
+{cross_analyst_section}{debate_history_section}### Analyst Report
 {analyst_report}
 {engagement_section}
 ### Instructions
@@ -1055,6 +1081,8 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         for type_id, report in analyst_reports.items():
             if report.is_success:
                 self.report_saver.save_analyst_report(report)
+                # Track debate history
+                self.debate_tracker.append_analyst_entry(type_id, 1, report.content)
                 self.progress.emit_agent_completed("analyst", type_id, report.token_usage.total_tokens, True)
                 logger.info(
                     f"  Analyst {type_id} ({self.prompt_loader.investing_type_name(type_id)}): "
@@ -1109,6 +1137,8 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         for type_id, review in rd_reviews.items():
             if review.is_success:
                 self.report_saver.save_rd_review(review)
+                # Track debate history
+                self.debate_tracker.append_rd_entry(type_id, 1, review.content)
                 self.progress.emit_agent_completed("rd_review", type_id, review.token_usage.total_tokens, True)
                 logger.info(
                     f"  RD Review {type_id}: {review.token_usage.total_tokens:,} tokens"
@@ -1184,6 +1214,8 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         for type_id, report in analyst_reports.items():
             if report.is_success:
                 self.report_saver.save_analyst_report(report)
+                # Track debate history
+                self.debate_tracker.append_analyst_entry(type_id, iteration, report.content)
                 self.progress.emit_agent_completed("analyst", type_id, report.token_usage.total_tokens, True)
                 logger.info(
                     f"  Analyst {type_id}: {report.token_usage.total_tokens:,} tokens"
@@ -1240,6 +1272,8 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         for type_id, review in rd_reviews.items():
             if review.is_success:
                 self.report_saver.save_rd_review(review)
+                # Track debate history
+                self.debate_tracker.append_rd_entry(type_id, iteration, review.content)
                 self.progress.emit_agent_completed("rd_review", type_id, review.token_usage.total_tokens, True)
                 logger.info(f"  RD Review {type_id}: {review.token_usage.total_tokens:,} tokens")
             else:
@@ -1452,8 +1486,9 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         Returns:
             Path to the final memo file
         """
-        # Clear output directory cache to ensure fresh versioned directory for this run
+        # Clear caches to ensure fresh state for this run
         clear_output_dir_cache()
+        clear_iteration_assignments()  # Fresh randomized 2-2-2 assignments
 
         logger.info(f"{'='*60}")
         logger.info(f"TickerToThesis Pipeline: {self.ticker}")
@@ -1634,6 +1669,21 @@ Examples:
         default=5,
         help="Number of debate iterations (5-10, default: 5)",
     )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="Publish final memo to Ghost newsletter (immediately)",
+    )
+    parser.add_argument(
+        "--draft",
+        action="store_true",
+        help="Save final memo as draft in Ghost (for review before publishing)",
+    )
+    parser.add_argument(
+        "--send-email",
+        action="store_true",
+        help="Send newsletter email when publishing (requires --publish)",
+    )
 
     args = parser.parse_args()
 
@@ -1712,6 +1762,33 @@ Examples:
     try:
         result = asyncio.run(pipeline.run())
         print(f"\nSuccess! Final memo: {result}")
+
+        # Publish to Ghost newsletter if requested
+        if args.publish or args.draft:
+            try:
+                from newsletter_publisher import publish_memo
+                print(f"\n{'='*60}")
+                print(f"NEWSLETTER: Publishing to Ghost...")
+                print(f"{'='*60}")
+
+                publish_result = asyncio.run(publish_memo(
+                    ticker=ticker,
+                    lang="EN",
+                    draft=args.draft or not args.publish,  # Default to draft unless --publish
+                    send_email=args.send_email and args.publish,  # Only send if publishing
+                ))
+
+                if publish_result.get("status") == "draft":
+                    print(f"Draft saved: {publish_result.get('post_url', 'See Ghost admin')}")
+                else:
+                    print(f"Published: {publish_result.get('post_url')}")
+                    if publish_result.get("email_sent"):
+                        print("Newsletter email sent to subscribers!")
+
+            except Exception as e:
+                print(f"Newsletter publishing failed: {e}")
+                print("(Pipeline completed successfully, but Ghost publish failed)")
+
         sys.exit(0)
     except KeyboardInterrupt:
         print("\nInterrupted by user")

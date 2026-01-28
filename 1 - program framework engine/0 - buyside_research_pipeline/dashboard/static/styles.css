@@ -95,6 +95,12 @@ body {
     gap: 16px;
 }
 
+.analysis-date {
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin-right: 16px;
+}
+
 .timestamp {
     color: var(--text-secondary);
     font-size: 14px;

@@ -31,10 +31,12 @@ class GeminiProvider(BaseProvider):
         "gemini-pro": "gemini-pro-latest",
         "gemini-1.5-pro": "gemini-2.5-pro",  # Map 1.5 requests to 2.5
         "gemini-2.5-pro": "gemini-2.5-pro",
+        "gemini-3-pro-preview": "gemini-3-pro-preview",  # Gemini 3 Pro (Jan 2026)
         "gemini-flash": "gemini-2.5-flash",
         "gemini-1.5-flash": "gemini-2.5-flash",
         "gemini-2.5-flash": "gemini-2.5-flash",
         "gemini-2.0-flash": "gemini-2.0-flash",
+        "gemini-3-flash-preview": "gemini-3-flash-preview",  # Gemini 3 Flash (Dec 2025)
         "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
         "flash-lite": "gemini-2.5-flash-lite",
     }

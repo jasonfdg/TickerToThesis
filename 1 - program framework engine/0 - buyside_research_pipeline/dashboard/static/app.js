@@ -24,6 +24,7 @@ class PipelineDashboard {
         // DOM elements
         this.elements = {
             ticker: document.getElementById('ticker'),
+            analysisDate: document.getElementById('analysis-date'),
             timestamp: document.getElementById('timestamp'),
             statusBadge: document.getElementById('status-badge'),
             progressFill: document.getElementById('progress-fill'),
@@ -210,6 +211,11 @@ class PipelineDashboard {
                 this.state.totalIterations = data.iterations || 5;
                 this.state.startedAt = new Date();
                 this.elements.ticker.textContent = data.ticker;
+                // Display analysis date (from backend if provided, else current date)
+                const dateStr = data.analysis_date || new Date().toLocaleDateString('en-US', {
+                    year: 'numeric', month: 'long', day: 'numeric'
+                });
+                this.elements.analysisDate.textContent = `Analysis: ${dateStr}`;
                 this.updateStatus('running');
                 this.addLog(`Pipeline started for ${data.ticker}`, 'info');
                 this.resetAgentStatuses();
@@ -518,15 +524,16 @@ class PipelineDashboard {
         }
 
         // Set English PDF link
+        // Use encodeURI (not encodeURIComponent) to preserve path separators (/)
         if (pdfEn && this.elements.reportEn) {
-            this.elements.reportEn.href = `/reports/${encodeURIComponent(pdfEn)}`;
+            this.elements.reportEn.href = `/reports/${encodeURI(pdfEn)}`;
             this.elements.reportEn.style.display = 'flex';
             this.addLog(`English PDF ready: ${pdfEn}`, 'success');
         }
 
         // Set Chinese PDF link
         if (pdfCn && this.elements.reportCn) {
-            this.elements.reportCn.href = `/reports/${encodeURIComponent(pdfCn)}`;
+            this.elements.reportCn.href = `/reports/${encodeURI(pdfCn)}`;
             this.elements.reportCn.style.display = 'flex';
             this.addLog(`Chinese PDF ready: ${pdfCn}`, 'success');
         }

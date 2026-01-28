@@ -265,8 +265,9 @@ class CitationExtractor:
             for match in pattern.finditer(content):
                 claim_text = match.group(1).strip()
 
-                # Skip very short or duplicate claims
-                if len(claim_text) < 20 or claim_text.lower() in seen_claims:
+                # Skip short claims (40 char minimum reduces false positives)
+                # or duplicate claims
+                if len(claim_text) < 40 or claim_text.lower() in seen_claims:
                     continue
 
                 seen_claims.add(claim_text.lower())

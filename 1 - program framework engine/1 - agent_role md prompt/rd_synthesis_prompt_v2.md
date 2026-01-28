@@ -62,6 +62,13 @@ The memo MUST follow this exact format:
 - Strong opinions, loosely held. State conviction, but name what would reverse it.
 - If this is a pass, specify the price at which we would act.
 
+**IRR Hurdle for Action (MANDATORY):**
+- **LONG positions require ≥15% expected IRR** from current price to fair value over the investment horizon.
+- **SHORT positions require ≥20-25% expected IRR** to compensate for unlimited downside risk, borrow costs, and timing uncertainty.
+- If the expected return does not clear these hurdles, the recommendation MUST be PASS regardless of qualitative conviction.
+- Show the IRR calculation explicitly: Entry price → Fair value → Time horizon → Implied IRR.
+- A "great company at fair price" is a PASS. We only act when price offers asymmetric reward.
+
 **On the Final View:**
 - Differentiation matters. If your conclusion is consensus, we've added nothing.
 - Articulate the variant perception: The market believes X. We believe Y. Why are they wrong?
@@ -115,6 +122,7 @@ Follow this structure, ensuring each section reflects our unified view:
 4. **Investment Thesis & Variant View** — Why attractive now, what market misunderstands
 5. **Valuation** — With derived entry price, not anchored to current
    - **Required:** Include a sensitivity table showing fair value across key variable ranges (e.g., growth rate vs. WACC, or margin vs. multiple). The table crystallizes what assumptions drive the thesis.
+   - **Required:** Calculate and state the implied IRR from current price to base-case fair value. Must clear 15% for LONG, 20-25% for SHORT, or recommendation is PASS.
 6. **Key Analytical Tensions** — 3 substantive debates (see format below)
 7. **Catalysts** — Milestone-bound, not calendar dates
 8. **Risks & Kill Conditions** — Specific, verifiable thresholds
@@ -191,5 +199,6 @@ Before outputting, verify:
 10. **Opening:** Punches immediately with recommendation (the header + first paragraph)?
 11. **Closing:** Ends with impact, not summary?
 12. **Seams:** No trace of the multi-agent process visible?
+13. **IRR Hurdle:** Is implied IRR explicitly calculated? Does it clear 15% (LONG) or 20-25% (SHORT)? If not, is recommendation PASS?
 
 If any check fails, revise before submitting.

@@ -91,7 +91,7 @@ ANALYST_PROVIDERS: Dict[int, Tuple[str, str]] = {
 # NOTE: These should match ROLE_PROVIDER_CONFIG in config.py
 ROLE_PROVIDERS: Dict[AgentRole, Tuple[str, str]] = {
     AgentRole.RD_REVIEW: ("claude", "sonnet"),           # Default for non-typed RD calls (see RD_REVIEW_PROVIDER_CONFIG)
-    AgentRole.RD_SYNTHESIS: ("gemini", "gemini-2.5-pro"),  # Gemini for synthesis (1-step, no polish)
+    AgentRole.RD_SYNTHESIS: ("gemini", "gemini-3-pro-preview"),  # Gemini 3 Pro for synthesis (deeper reasoning)
     AgentRole.SOURCE_SUMMARY: ("openai", "gpt-4o-mini"),   # Best JSON validity from benchmark
     AgentRole.HUMAN_READABLE: ("claude", "sonnet"),      # (Deprecated - synthesis includes polish)
     AgentRole.SOURCE_SCOUT: ("perplexity", "sonar"),     # Real web search

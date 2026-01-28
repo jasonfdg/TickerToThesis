@@ -100,8 +100,8 @@ class PipelineConfig:
     num_analysts: int = 6
 
     # Timeout settings (seconds)
-    single_call_timeout: float = 300.0
-    parallel_batch_timeout: float = 600.0
+    single_call_timeout: float = 600.0   # 10 minutes per call
+    parallel_batch_timeout: float = 900.0  # 15 minutes for batch
 
     # Retry settings (tuned for rate limits)
     max_retries: int = 5
@@ -172,8 +172,8 @@ RD_REVIEW_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
 
 # Role -> (provider, model) mapping for non-analyst calls
 ROLE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
-    "rd_review": {"provider": "claude", "model": "sonnet"},       # Default for non-typed RD calls
-    "rd_synthesis": {"provider": "gemini", "model": "gemini-2.5-pro"},  # Better synthesis quality
+    "rd_review": {"provider": "gemini", "model": "gemini-3-pro-preview"},  # Gemini 3 Pro (overridden by randomization)
+    "rd_synthesis": {"provider": "gemini", "model": "gemini-3-pro-preview"},  # Upgraded to Gemini 3 Pro for deeper reasoning
     "source_summary": {"provider": "openai", "model": "gpt-4o-mini"},   # Best JSON validity from benchmark
     "human_readable": {"provider": "claude", "model": "sonnet"},  # Preserve depth
     "source_scout": {"provider": "perplexity", "model": "sonar"}, # Real web search
@@ -205,7 +205,7 @@ LIGHT_MODE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
     "source_summary": {"provider": "openai", "model": "gpt-4o-mini"},
     "human_readable": {"provider": "gemini", "model": "gemini-2.5-flash"},
     "source_scout": {"provider": "perplexity", "model": "sonar"},
-    "rd_synthesis": {"provider": "gemini", "model": "gemini-2.5-pro"},
+    "rd_synthesis": {"provider": "gemini", "model": "gemini-3-pro-preview"},  # Gemini 3 Pro for light mode synthesis too
 }
 
 # Light mode fallback chain (used when primary provider is rate-limited)
@@ -222,6 +222,128 @@ LIGHT_MODE_DELAYS: Dict[str, float] = {
     "loop_wait_max": 60.0,     # Max wait during fallback loop (vs 120s)
     "sequential_delay": 2.0,   # Delay between sequential calls (vs 5.0s)
 }
+
+
+# =============================================================================
+# Randomized 2-2-2 Provider Assignment
+# =============================================================================
+
+# Full mode models for randomization (2 of each provider)
+FULL_MODE_PROVIDERS: List[Tuple[str, str]] = [
+    ("claude-cli", "sonnet"),
+    ("claude-cli", "sonnet"),
+    ("openai", "gpt-4o"),
+    ("openai", "gpt-4o"),
+    ("gemini", "gemini-3-pro-preview"),
+    ("gemini", "gemini-3-pro-preview"),
+]
+
+# Light mode models for randomization (2 of each provider)
+# Note: claude-cli uses sonnet (not haiku) since Max subscription is unlimited
+LIGHT_MODE_PROVIDERS: List[Tuple[str, str]] = [
+    ("claude-cli", "sonnet"),
+    ("claude-cli", "sonnet"),
+    ("openai", "gpt-4o-mini"),
+    ("openai", "gpt-4o-mini"),
+    ("gemini", "gemini-2.5-flash"),
+    ("gemini", "gemini-2.5-flash"),
+]
+
+# Fallback chain order (full mode): claude-cli → gemini 3 pro → gpt-4o → claude API
+FALLBACK_CHAIN_FULL: List[Tuple[str, str]] = [
+    ("claude-cli", "sonnet"),
+    ("gemini", "gemini-3-pro-preview"),
+    ("openai", "gpt-4o"),
+    ("claude", "sonnet"),  # Claude API as last resort
+]
+
+# Fallback chain order (light mode): claude-cli → gemini flash → gpt-4o-mini → claude API
+# Note: claude-cli uses sonnet (unlimited via Max), claude API uses haiku (pay-per-token)
+FALLBACK_CHAIN_LIGHT: List[Tuple[str, str]] = [
+    ("claude-cli", "sonnet"),
+    ("gemini", "gemini-2.5-flash"),
+    ("openai", "gpt-4o-mini"),
+    ("claude", "haiku"),  # Claude API as last resort (pay-per-token, so use cheap model)
+]
+
+
+def generate_random_assignment(
+    iteration: int,
+    role: str = "analyst",
+    pipeline_mode: str = "full",
+    seed: Optional[int] = None
+) -> Dict[int, Dict[str, str]]:
+    """Generate a random 2-2-2 provider assignment for an iteration.
+
+    Args:
+        iteration: Iteration number (used as part of seed for reproducibility)
+        role: "analyst" or "rd_review" (different shuffles)
+        pipeline_mode: "full" or "light"
+        seed: Optional seed override for testing
+
+    Returns:
+        Dict mapping type_id (1-6) to {"provider": str, "model": str}
+    """
+    import random as rand
+
+    # Create deterministic but different seed for each iteration/role combo
+    # This ensures reproducibility while giving different shuffles
+    effective_seed = seed if seed is not None else hash((iteration, role)) % (2**31)
+    rand.seed(effective_seed)
+
+    providers = FULL_MODE_PROVIDERS if pipeline_mode == "full" else LIGHT_MODE_PROVIDERS
+    shuffled = providers.copy()
+    rand.shuffle(shuffled)
+
+    return {
+        i + 1: {"provider": shuffled[i][0], "model": shuffled[i][1]}
+        for i in range(6)
+    }
+
+
+# Cache for iteration assignments (cleared on new pipeline run)
+_iteration_assignments: Dict[Tuple[int, str, str], Dict[int, Dict[str, str]]] = {}
+
+
+def get_randomized_provider(
+    type_id: int,
+    iteration: int,
+    role: str = "analyst",
+    pipeline_mode: Optional[str] = None
+) -> Tuple[str, str]:
+    """Get provider/model for a type_id using randomized 2-2-2 assignment.
+
+    Args:
+        type_id: Analyst/RD type (1-6)
+        iteration: Pipeline iteration number
+        role: "analyst" or "rd_review"
+        pipeline_mode: "full" or "light" (defaults to global mode)
+
+    Returns:
+        Tuple of (provider, model)
+    """
+    mode = pipeline_mode or get_pipeline_mode()
+    cache_key = (iteration, role, mode)
+
+    if cache_key not in _iteration_assignments:
+        _iteration_assignments[cache_key] = generate_random_assignment(
+            iteration, role, mode
+        )
+
+    assignment = _iteration_assignments[cache_key][type_id]
+    return assignment["provider"], assignment["model"]
+
+
+def clear_iteration_assignments() -> None:
+    """Clear cached assignments. Call at start of new pipeline run."""
+    global _iteration_assignments
+    _iteration_assignments = {}
+
+
+def get_fallback_chain(pipeline_mode: Optional[str] = None) -> List[Tuple[str, str]]:
+    """Get the fallback chain for the current pipeline mode."""
+    mode = pipeline_mode or get_pipeline_mode()
+    return FALLBACK_CHAIN_LIGHT if mode == "light" else FALLBACK_CHAIN_FULL
 
 
 # =============================================================================

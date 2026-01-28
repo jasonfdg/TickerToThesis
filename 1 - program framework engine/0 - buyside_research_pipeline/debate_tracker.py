@@ -610,7 +610,10 @@ class DebateHistoryManager:
         for entry in history["debate_entries"]:
             rd_entry = entry.get("rd_entry", {})
             if rd_entry.get("engagement_score"):
-                engagement_scores.append(rd_entry["engagement_score"])
+                try:
+                    engagement_scores.append(int(rd_entry["engagement_score"]))
+                except (ValueError, TypeError):
+                    pass  # Skip invalid scores
 
         if engagement_scores:
             avg_score = sum(engagement_scores) / len(engagement_scores)

@@ -72,6 +72,34 @@ class ReportSaver:
         short_name = INVESTING_TYPES[type_id]["short_name"]
         return f"rd_review_{short_name}_v{iteration}.md"
 
+    def get_analyst_report_path(self, type_id: int, iteration: int) -> Path:
+        """
+        Get the path to an analyst report (relative to output_dir).
+
+        Args:
+            type_id: The investing type ID (1-6)
+            iteration: The iteration number
+
+        Returns:
+            Relative path suitable for storage in webSource.json
+        """
+        filename = self._get_analyst_filename(type_id, iteration)
+        return Path("interim") / filename
+
+    def get_rd_review_path(self, type_id: int, iteration: int) -> Path:
+        """
+        Get the path to an RD review (relative to output_dir).
+
+        Args:
+            type_id: The investing type ID (1-6)
+            iteration: The iteration number
+
+        Returns:
+            Relative path suitable for storage in webSource.json
+        """
+        filename = self._get_rd_review_filename(type_id, iteration)
+        return Path("interim") / filename
+
     def save_analyst_report(self, report: AgentReport) -> Path:
         """
         Save an analyst report to the interim directory.

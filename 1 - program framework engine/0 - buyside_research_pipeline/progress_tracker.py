@@ -76,6 +76,7 @@ class ProgressTracker:
         self._emit("pipeline_started", {
             "ticker": self.ticker,
             "iterations": self.num_iterations,
+            "analysis_date": datetime.now().strftime("%B %d, %Y"),
         })
 
         if TQDM_AVAILABLE:

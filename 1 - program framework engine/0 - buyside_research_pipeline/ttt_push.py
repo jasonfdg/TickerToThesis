@@ -44,6 +44,168 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+# =============================================================================
+# Twitter Article Formatting
+# =============================================================================
+
+def extract_memo_metadata(memo_path: Path) -> Dict[str, str]:
+    """
+    Extract key fields from memo for Twitter Article.
+
+    Parses the markdown memo to extract ticker, title, executive summary,
+    and TL;DR components needed for social media publishing.
+    """
+    content = memo_path.read_text(encoding="utf-8")
+
+    # Extract ticker from frontmatter
+    ticker_match = re.search(r"^ticker:\s*(\w+)", content, re.MULTILINE)
+    ticker = ticker_match.group(1).upper() if ticker_match else ""
+
+    # Extract title from first H1
+    title_match = re.search(r"^# \$?\w+:\s*(.+)$", content, re.MULTILINE)
+    title = title_match.group(1).strip() if title_match else ""
+
+    # Extract executive summary (first paragraph after ## 1. Executive Summary)
+    exec_match = re.search(
+        r"## 1\. Executive Summary\n+(.+?)(?=\n\n|\n##)",
+        content,
+        re.DOTALL
+    )
+    exec_summary = exec_match.group(1).strip() if exec_match else ""
+    # Clean markdown formatting from exec summary
+    exec_summary = re.sub(r"\*\*([^*]+)\*\*", r"\1", exec_summary)
+    exec_summary = re.sub(r"\*([^*]+)\*", r"\1", exec_summary)
+
+    # Extract TL;DR section
+    tldr_match = re.search(
+        r"\*\*TL;DR:\*\*\n(.*?)(?=\n##|\Z)",
+        content,
+        re.DOTALL
+    )
+    tldr_raw = tldr_match.group(1).strip() if tldr_match else ""
+
+    # Parse individual TL;DR components
+    recommendation = ""
+    key_thesis = ""
+    primary_risk = ""
+    valuation = ""
+
+    for line in tldr_raw.split("\n"):
+        line = line.strip()
+        if "Recommendation" in line:
+            match = re.search(r"Recommendation[^:]*:\*\*\s*(.+)", line)
+            recommendation = match.group(1).strip() if match else ""
+        elif "Key thesis" in line:
+            match = re.search(r"Key thesis[^:]*:\*\*\s*(.+)", line)
+            key_thesis = match.group(1).strip() if match else ""
+        elif "Primary risk" in line:
+            match = re.search(r"Primary risk[^:]*:\*\*\s*(.+)", line)
+            primary_risk = match.group(1).strip() if match else ""
+        elif "Valuation" in line:
+            match = re.search(r"Valuation[^:]*:\*\*\s*(.+)", line)
+            valuation = match.group(1).strip() if match else ""
+
+    return {
+        "ticker": ticker,
+        "title": title,
+        "executive_summary": exec_summary,
+        "recommendation": recommendation,
+        "key_thesis": key_thesis,
+        "primary_risk": primary_risk,
+        "valuation": valuation,
+    }
+
+
+def format_twitter_article(
+    ticker: str,
+    title: str,
+    executive_summary: str,
+    recommendation: str,
+    key_thesis: str,
+    primary_risk: str,
+    valuation: str,
+    en_pdf_url: str = "",
+    cn_pdf_url: str = "",
+    ghost_url: str = "",
+) -> Dict[str, str]:
+    """
+    Format content for Twitter Article per TWITTER_ARTICLE_PUBLISHING.md standards.
+
+    Returns dict with 'title' and 'body' ready for Playwright MCP posting.
+    Target: ~80-100 words with executive summary, TL;DR, and PDF links.
+    """
+    # Title format: $TICKER: [headline]
+    article_title = f"${ticker}: {title}"
+
+    # Truncate executive summary to ~60 words for Twitter
+    words = executive_summary.split()
+    if len(words) > 60:
+        executive_summary = " ".join(words[:60]) + "..."
+
+    # Build body with $TICKER for discoverability - compact format
+    # Use single line breaks, no extra blank lines
+    body_parts = [
+        executive_summary,
+        "**TL;DR:**",
+        f"• **Recommendation:** {recommendation}",
+        f"• **Key thesis:** {key_thesis}",
+        f"• **Primary risk:** {primary_risk}",
+        f"• **Valuation:** {valuation}",
+        "Originally published on TickerToThesis.com",
+    ]
+
+    # Add PDF links at the END per methodology
+    if en_pdf_url:
+        body_parts.append(f"EN: {en_pdf_url}")
+    if cn_pdf_url:
+        body_parts.append(f"CN: {cn_pdf_url}")
+
+    article_body = "\n".join(body_parts)
+
+    return {
+        "title": article_title,
+        "body": article_body,
+    }
+
+
+async def generate_twitter_article_content(
+    ticker: str,
+    lang: str = "EN",
+    en_pdf_url: str = "",
+    cn_pdf_url: str = "",
+) -> Dict[str, str]:
+    """
+    Generate Twitter Article content from a memo.
+
+    Args:
+        ticker: Stock ticker symbol
+        lang: Language code for the memo
+        en_pdf_url: URL for English PDF (optional)
+        cn_pdf_url: URL for Chinese PDF (optional)
+
+    Returns:
+        Dict with 'title' and 'body' for Twitter Article
+    """
+    memo_path = find_latest_memo(ticker, lang)
+    if not memo_path:
+        raise FileNotFoundError(f"No memo found for {ticker}")
+
+    metadata = extract_memo_metadata(memo_path)
+
+    return format_twitter_article(
+        ticker=metadata["ticker"] or ticker.upper(),
+        title=metadata["title"],
+        executive_summary=metadata["executive_summary"],
+        recommendation=metadata["recommendation"],
+        key_thesis=metadata["key_thesis"],
+        primary_risk=metadata["primary_risk"],
+        valuation=metadata["valuation"],
+        en_pdf_url=en_pdf_url,
+        cn_pdf_url=cn_pdf_url,
+    )
+
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -524,6 +686,8 @@ def find_latest_memo(ticker: str, lang: str = "EN") -> Optional[Path]:
     Find the most recent memo file for a ticker.
 
     Searches through all versioned output directories to find the latest memo.
+    Handles both simple tickers (AAPL) and tickers with company names
+    (600519.SS KWEICHOW MOUTAI).
 
     Args:
         ticker: Stock ticker symbol
@@ -537,7 +701,10 @@ def find_latest_memo(ticker: str, lang: str = "EN") -> Optional[Path]:
         return None
 
     # Find all directories for this ticker, sorted by version (descending)
-    pattern = re.compile(rf"^{ticker}_V(\d+)_")
+    # Pattern matches: {ticker}_V{n}_ OR {ticker} {company_name}_V{n}_
+    # Use re.escape to handle special chars in ticker (e.g., "600519.SS")
+    escaped_ticker = re.escape(ticker)
+    pattern = re.compile(rf"^{escaped_ticker}(?:\s+[^_]+)?_V(\d+)_")
     dirs_with_version = []
 
     for folder in REPORT_OUTPUT.iterdir():
@@ -551,9 +718,16 @@ def find_latest_memo(ticker: str, lang: str = "EN") -> Optional[Path]:
 
     # Search for memo in each directory
     for _, folder in dirs_with_version:
+        # Try exact match first: {ticker}_memo_{lang}.md
         memo_path = folder / f"{ticker}_memo_{lang}.md"
         if memo_path.exists():
             return memo_path
+
+        # Try pattern with company name: {ticker}*_memo_{lang}.md
+        memo_pattern = f"{ticker}*_memo_{lang}.md"
+        matches = list(folder.glob(memo_pattern))
+        if matches:
+            return matches[0]
 
     return None
 
@@ -1685,14 +1859,27 @@ async def add_pdfs_to_post(
         # Create download section
         download_section = create_pdf_download_section(pdf_urls, ticker)
 
-        # Check if download section already exists
-        if "pdf-downloads" in current_html:
-            # Replace existing section
-            import re as regex
+        # Check if download section already exists (multiple patterns)
+        import re as regex
+        has_pdf_section = (
+            "pdf-downloads" in current_html or
+            bool(regex.search(r'📥 Download [^<]+ Investment Memo', current_html))
+        )
+
+        if has_pdf_section:
+            # Replace existing section - try both patterns
+            # Pattern 1: div with pdf-downloads class
             new_html = regex.sub(
                 r'<hr>\s*<div class="pdf-downloads".*?</div>',
                 download_section,
                 current_html,
+                flags=regex.DOTALL,
+            )
+            # Pattern 2: h3 with 📥 Download header
+            new_html = regex.sub(
+                r'(<hr>)?<h3[^>]*>📥 Download[^<]+Investment Memo</h3><p>Get the full research memo in PDF format:</p><ul>.*?</ul>',
+                download_section,
+                new_html,
                 flags=regex.DOTALL,
             )
         else:
@@ -1862,6 +2049,10 @@ Examples:
     publish_parser.add_argument("--visibility", default="public",
                                choices=["public", "members", "paid"],
                                help="Post visibility")
+    publish_parser.add_argument("--twitter", action="store_true",
+                               help="Generate Twitter Article content for posting")
+    publish_parser.add_argument("--no-pdfs", action="store_true",
+                               help="Skip uploading PDFs (PDFs are uploaded by default)")
 
     # Stats command
     subparsers.add_parser("stats", help="Get newsletter statistics")
@@ -1931,6 +2122,49 @@ Examples:
             send_email=args.send_email,
         )
         print(json.dumps(result, indent=2))
+
+        # Upload PDFs by default (unless --no-pdfs flag)
+        if not args.no_pdfs and result.get("post_id"):
+            pdf_result = await add_pdfs_to_post(result["post_id"], args.ticker, dry_run=False)
+            if pdf_result.get("status") == "success":
+                result["pdfs_uploaded"] = pdf_result.get("pdfs_uploaded", {})
+                print(f"\n✓ PDFs uploaded: {list(result['pdfs_uploaded'].keys())}")
+            elif pdf_result.get("status") == "no_pdfs":
+                print(f"\n⚠ No PDFs found for {args.ticker}")
+            else:
+                print(f"\n⚠ PDF upload: {pdf_result.get('message', 'unknown error')}")
+
+        # Generate Twitter Article content if requested
+        if args.twitter and result.get("post_url"):
+            try:
+                # Get PDF URLs if available
+                pdfs = find_pdfs_for_ticker(args.ticker)
+                en_pdf_url = ""
+                cn_pdf_url = ""
+
+                # If PDFs exist, we could upload them first, but for now just note they exist
+                if pdfs.get("EN"):
+                    en_pdf_url = f"[PDF available: {pdfs['EN'].name}]"
+                if pdfs.get("CN"):
+                    cn_pdf_url = f"[PDF available: {pdfs['CN'].name}]"
+
+                twitter_content = await generate_twitter_article_content(
+                    args.ticker,
+                    args.lang,
+                    en_pdf_url=en_pdf_url,
+                    cn_pdf_url=cn_pdf_url,
+                )
+
+                print("\n" + "=" * 60)
+                print("TWITTER ARTICLE CONTENT")
+                print("=" * 60)
+                print(f"\nTitle:\n{twitter_content['title']}")
+                print(f"\nBody:\n{twitter_content['body']}")
+                print("\n" + "=" * 60)
+                print("Use Playwright MCP to post to x.com/compose/articles")
+                print("=" * 60)
+            except Exception as e:
+                print(f"\nWarning: Could not generate Twitter content: {e}")
 
     elif args.command == "stats":
         stats = await get_newsletter_stats()

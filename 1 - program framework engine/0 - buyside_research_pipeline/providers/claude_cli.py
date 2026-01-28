@@ -77,15 +77,12 @@ class ClaudeCliProvider(BaseProvider):
             # Build CLI command
             # --print: Non-interactive, print response only
             # --model: Specify model (sonnet, opus, haiku)
+            # Note: Claude CLI doesn't support --max-tokens flag
             cmd = [
                 self._cli_path,
                 "--print",
                 "--model", resolved_model,
             ]
-
-            # Add max tokens if specified
-            if max_tokens:
-                cmd.extend(["--max-tokens", str(max_tokens)])
 
             # Read prompt from file
             with open(prompt_file, "r", encoding="utf-8") as pf:

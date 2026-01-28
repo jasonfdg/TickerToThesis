@@ -32,6 +32,7 @@ These could be:
 - Management executing a hidden strategic pivot (highly impactful)
 - Competitive dynamics fundamentally changing (transformative)
 - Market completely mispricing a structural shift (highly impactful)
+- Hidden assets with monetization potential (highly impactful) — strategic investments at cost, undervalued real estate, IP portfolios, spinoff candidates (e.g., SKM's Anthropic stake = 25% of market cap but invisible in earnings)
 
 Some forces are truly transformative (paradigm shifts), others are highly impactful but not transformative. Both matter. Identify 1-3 that will materially move the needle.
 

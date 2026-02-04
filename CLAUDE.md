@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-Multi-agent investment research automation framework. Generates institutional-quality buyside memos by orchestrating 6 parallel AI analyst agents (each with distinct investing philosophies) through 5 debate iterations with a Research Director. Built on a corpus of 13,635 VIC (Value Investors Club) memos.
+Multi-agent investment research automation framework. Generates institutional-quality buyside memos by orchestrating 6 parallel AI analyst agents (each with distinct investing philosophies) through 5 debate iterations with a Research Director.
 
 ## Commands
 
@@ -31,19 +31,8 @@ python run_full_synthesis.py AAPL
 cd "1 - program framework engine/0 - buyside_research_pipeline"
 python3 -m venv venv
 source venv/bin/activate
-pip install anthropic python-dotenv
+pip install -r requirements.txt
 cp .env.example .env  # Then add ANTHROPIC_API_KEY
-```
-
-### Scrapers (Data Collection)
-```bash
-cd scrapers
-
-# Download VIC memo database
-python vic_full_download.py
-
-# Extract structured content
-python vic_batch_extract.py
 ```
 
 ## Architecture
@@ -72,7 +61,7 @@ Output: ${TICKER}_memo_vF.md
 | `agent_runner.py` | Async Claude API with retry/rate limiting (50 RPM semaphore, exponential backoff) |
 | `config.py` | Model config (claude-sonnet-4-20250514), paths, 6 investing types |
 | `models.py` | `AgentRole` enum, `TokenUsage`, `AgentReport`, `PipelineState` dataclasses |
-| `prompt_loader.py` | Cached loading of all 14 prompt files |
+| `prompt_loader.py` | Cached loading of all prompt files |
 | `report_saver.py` | Saves 60 interim reports + synthesis to `2 - report output/$TICKER/` |
 | `source_manager.py` | Manages `${TICKER}_webSource.json` |
 
@@ -114,7 +103,7 @@ Output: ${TICKER}_memo_vF.md
 
 **Debate as Core Pattern**: The 5-iteration cycle forces genuine intellectual disagreement. Analysts defend positions; RD challenges them. Final synthesis resolves conflicts with evidence hierarchy.
 
-**Philosophy-First Agents**: Each of 6 analyst types embodies a distinct investing worldview. They're not just different prompts—they're different mental models (e.g., Deep Value ignores growth; Imaginative Growth ignores current fundamentals).
+**Philosophy-First Agents**: Each of 6 analyst types embodies a distinct investing worldview. They're not just different prompts—they're different mental models.
 
 **Evidence Hierarchy**: Outputs distinguish high-confidence facts (primary sources) → medium-confidence inferences → speculation requiring validation. Kill conditions are explicit.
 
@@ -124,32 +113,5 @@ Output: ${TICKER}_memo_vF.md
 
 - Model: `claude-sonnet-4-20250514`, 16K max tokens, temp 0.7
 - Rate limiting: 50 RPM semaphore, 30-120s exponential backoff on 529 errors
-- Sequential execution with delays between calls (parallel execution disabled due to rate limits)
+- Sequential execution with delays between calls
 - Expect ~1.7M tokens for full 5-iteration run (~$13-15 per ticker)
-
-## CRITICAL: Keeping resume_pipeline.py in Sync
-
-**Rule: When you modify `TickerToThesis.py`, also update `resume_pipeline.py`.**
-
-Both files must have identical:
-- Prompt structures (`_build_analyst_*_prompt`, `_build_rd_*_prompt`)
-- Provider/runner configuration (MultiProviderRunner, fallback chains)
-- Debate history integration (DebateHistoryManager)
-- Engagement assessment in RD prompts
-- Position extraction before synthesis
-- Synthesis prompt with accountability rules
-
-### Quick Sync Check
-```bash
-cd "1 - program framework engine/0 - buyside_research_pipeline"
-
-# Compare method signatures
-diff <(grep "def _build" TickerToThesis.py | sort) <(grep "def _build" resume_pipeline.py | sort)
-
-# Should show NO differences for core prompt builders
-```
-
-### Why This Matters
-- `resume_pipeline.py` is used when runs are interrupted (API failures, credit depletion)
-- If it drifts, resumed runs produce inconsistent outputs
-- Debate history, engagement assessment, and accountability rules must match

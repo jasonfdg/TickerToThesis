@@ -2,7 +2,7 @@
 
 **Multi-agent framework for generating institutional-quality buyside investment memos.**
 
-Built on analysis of 13,635 VIC (Value Investors Club) memos. Uses 6 parallel AI analysts with distinct investing philosophies through 5 debate iterations with a Research Director.
+Uses 6 parallel AI analysts with distinct investing philosophies through 5 debate iterations with a Research Director.
 
 🔗 **Website:** [tickertothesis.com](https://tickertothesis.com)
 
@@ -95,7 +95,7 @@ python TickerToThesis.py AAPL "Apple's services business is undervalued..."
 Distinguishes primary sources (CEO interviews, Glassdoor, GitHub activity) from facts (SEC filings) and opinions (sell-side research). Minimum 3 primary sources required.
 
 ### Variant View Required
-Every memo must articulate: "The market believes X. We believe Y. Here's why they're wrong." Only 19% of the VIC corpus does this well—TTT enforces it.
+Every memo must articulate: "The market believes X. We believe Y. Here's why they're wrong."
 
 ### Kill Conditions
 Specific, falsifiable thresholds that would invalidate the thesis. Not "revenue declines" but "revenue growth falls below 5% for 2 consecutive quarters."
@@ -188,4 +188,4 @@ MIT
 
 ## Acknowledgments
 
-Built on learnings from 13,635 VIC memos. Inspired by the investment processes of Buffett, Munger, Druckenmiller, Klarman, and the Tiger Cubs.
+Inspired by the investment processes of Buffett, Munger, Druckenmiller, Klarman, and the Tiger Cubs.

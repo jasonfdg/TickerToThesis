@@ -82,7 +82,7 @@ Before adding any source, ask:
 | Stakeholders | `"[company] glassdoor"`, `"[product] reviews"`, `site:reddit.com [company]` |
 | Competitors | `"[company] vs [competitor]"`, `"switched from [competitor]"` |
 | Behavioral | `"[company] hiring"`, `"[company] patents 2025"` |
-| Buyside | `site:valueinvestorsclub.com [company]`, `"[company] hedge fund letter"` |
+| Buyside | `"[company] hedge fund letter"`, `"[company] investor presentation"` |
 | Sell-side | `"[company] analyst initiation"`, `"[company] price target"` |
 | Threads | `site:twitter.com [company] thread`, `"[company]" site:substack.com` |
 
@@ -138,7 +138,7 @@ Before adding any source, ask:
 ## Anti-Patterns
 
 - Don't dismiss sell-side — they compile useful data, but note their biases
-- Don't treat all opinions equally — a VIC writeup from a proven investor > random blog post
+- Don't treat all opinions equally — a writeup from a proven investor > random blog post
 - Don't just return first Google result — dig deeper
 - Don't confirm bias — search equally for supporting AND challenging evidence
 - Triangulate — great analysis should cite primary sources you can verify

@@ -1,1 +1,0 @@
-# Buyside Research Source Scrapers

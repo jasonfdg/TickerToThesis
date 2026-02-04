@@ -46,7 +46,7 @@ Official records that can be independently verified.
 
 | Type | Examples | How to Use |
 |------|----------|------------|
-| Buyside Research | VIC writeups, SumZero, hedge fund letters | High-quality thinking from skin-in-game investors |
+| Buyside Research | SumZero, hedge fund letters, investor presentations | High-quality thinking from skin-in-game investors |
 | Sell-side Research | Analyst reports, initiations, sector primers | Useful for consensus view and data compilation |
 | Independent Analysis | Substack, Medium deep-dives, blog posts | Often more rigorous than sell-side |
 | Social/Thread Analysis | Tweet threads from domain experts, investor threads | Fast signal, verify claims |

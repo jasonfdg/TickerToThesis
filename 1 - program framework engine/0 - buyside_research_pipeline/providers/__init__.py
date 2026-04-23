@@ -5,11 +5,11 @@ Multi-provider AI abstraction for the TickerToThesis pipeline.
 
 Architecture:
 - Analysts 1-6: Claude CLI Sonnet (Max subscription, consistent reasoning)
-- RD Reviews 1-3: Claude CLI Sonnet; 4-6: Gemini 2.5 Pro (adversarial voice)
-- Source Scout: Perplexity (real web search)
-- Source Summary: GPT-4o-mini (fast JSON extraction)
-- Synthesis: Gemini 3 Pro Preview (deep reasoning, independent model)
-- Polish: Claude Sonnet (preserves depth)
+- RD Reviews 1-6: Kimi K2 via OpenRouter (adversarial cross-model voice)
+- Source Scout: Perplexity Sonar via OpenRouter (real web search)
+- Source Summary: Claude CLI Sonnet (JSON extraction)
+- Synthesis: Claude CLI Sonnet (merged synthesis + polish)
+- Human Readable: Claude Sonnet (legacy polish step, preserves depth)
 """
 
 import asyncio
@@ -27,6 +27,7 @@ from .gemini import GeminiProvider
 from .gemini_cli import GeminiCliProvider
 from .perplexity import PerplexityProvider
 from .perplexity_cli import PerplexityCliProvider
+from .openrouter import OpenRouterProvider
 
 try:
     from ..models import AgentRole, TokenUsage
@@ -46,6 +47,7 @@ __all__ = [
     "OpenAIProvider",
     "GeminiProvider",
     "PerplexityProvider",
+    "OpenRouterProvider",
     # CLI providers (stubs - not yet implemented except Claude)
     "ClaudeCliProvider",
     "OpenAICliProvider",
@@ -64,6 +66,7 @@ class ProviderType(Enum):
     OPENAI = "openai"
     GEMINI = "gemini"
     PERPLEXITY = "perplexity"
+    OPENROUTER = "openrouter"      # Gateway to Kimi K2, Perplexity Sonar, etc.
     # CLI-based providers (subscription, no per-token costs)
     CLAUDE_CLI = "claude-cli"      # Implemented - Max subscription
     OPENAI_CLI = "openai-cli"      # Stub - not yet implemented
@@ -83,14 +86,16 @@ ANALYST_PROVIDERS: Dict[int, Tuple[str, str]] = {
 }
 
 
-# Role -> (provider, model) mapping for non-analyst roles
-# NOTE: These should match ROLE_PROVIDER_CONFIG in config.py
+# Role -> (provider, model) mapping for non-analyst roles.
+# These defaults are consulted when an AgentCall is built without an explicit
+# provider. They must stay in sync with ROLE_PROVIDER_CONFIG / RD_REVIEW_PROVIDER_CONFIG
+# in config.py, which is the authoritative source for runtime routing.
 ROLE_PROVIDERS: Dict[AgentRole, Tuple[str, str]] = {
-    AgentRole.RD_REVIEW: ("claude", "sonnet"),           # Default for non-typed RD calls (see RD_REVIEW_PROVIDER_CONFIG)
-    AgentRole.RD_SYNTHESIS: ("gemini", "gemini-3-pro-preview"),  # Gemini 3 Pro for synthesis (deeper reasoning)
-    AgentRole.SOURCE_SUMMARY: ("openai", "gpt-4o-mini"),   # Best JSON validity from benchmark
-    AgentRole.HUMAN_READABLE: ("claude", "sonnet"),      # (Deprecated - synthesis includes polish)
-    AgentRole.SOURCE_SCOUT: ("perplexity", "sonar"),     # Real web search
+    AgentRole.RD_REVIEW: ("openrouter", "moonshotai/kimi-k2"),  # Kimi K2 via OpenRouter
+    AgentRole.RD_SYNTHESIS: ("claude-cli", "sonnet"),           # Claude Sonnet via CLI
+    AgentRole.SOURCE_SUMMARY: ("claude-cli", "sonnet"),         # Claude Sonnet for JSON extraction
+    AgentRole.HUMAN_READABLE: ("claude", "sonnet"),             # Legacy polish step
+    AgentRole.SOURCE_SCOUT: ("openrouter", "perplexity/sonar"), # Perplexity Sonar via OpenRouter
 }
 
 
@@ -135,7 +140,7 @@ class ProviderFactory:
         Get or create a provider instance.
 
         Args:
-            provider_type: One of 'claude', 'openai', 'gemini', 'perplexity'
+            provider_type: One of 'claude', 'openai', 'gemini', 'perplexity', 'openrouter'
 
         Returns:
             Provider instance
@@ -152,6 +157,8 @@ class ProviderFactory:
                 self._providers[provider_type] = GeminiProvider(config)
             elif provider_type == "perplexity":
                 self._providers[provider_type] = PerplexityProvider(config)
+            elif provider_type == "openrouter":
+                self._providers[provider_type] = OpenRouterProvider(config)
             # CLI providers
             elif provider_type == "claude-cli":
                 self._providers[provider_type] = ClaudeCliProvider(config)

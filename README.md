@@ -189,7 +189,7 @@ python TickerToThesis.py AAPL "thesis..." --no-gui
 ## Known Limitations
 
 - **Materials pipeline is UK-agnostic**: the 10-K extractor in `materials_manager.py` looks for SEC Item 1/1A/7/7A headings; UK statutory accounts won't match those patterns and fall through to content-scan classification.
-- **OpenRouter dependency**: RD reviews (Kimi K2) and source scout (Perplexity Sonar) both route through OpenRouter. A single-vendor outage takes out both the RD critique and web research paths — only the Claude CLI and Gemini fallbacks remain.
+- **OpenRouter dependency**: RD reviews (Kimi K2) and source scout (Perplexity Sonar) both route through OpenRouter. A single-vendor outage takes out both paths. RD reviews fall back to Claude CLI / Gemini via the fallback chain; source scout has no fallback by design — it halts the pipeline so the failure is visible rather than producing a knowledge-only memo.
 - **Claude CLI requires Max subscription**: all analysts, synthesis, source summary, and human-readable polish assume an active Claude Code Max subscription. Without it, the pipeline falls through to paid Claude API (`claude/sonnet`) on pay-per-token rates.
 - **No retry limit on fallback loop**: if all providers in the fallback chain are rate-limited, the loop waits and retries indefinitely — watch `logs/` during extended runs.
 
@@ -200,7 +200,7 @@ python TickerToThesis.py AAPL "thesis..." --no-gui
 | # | Issue | Notes |
 |---|-------|-------|
 | 1 | Drop remaining `providers/openai*.py` + `providers/perplexity*.py` files from disk | Config no longer routes to them; code is dormant but still imported by `providers/__init__.py`. |
-| 2 | Add `OPENROUTER_API_KEY` to `.env.example` | Currently relies on machine-level env var; new installs won't know it's needed. |
+| ~~2~~ | ~~Add `OPENROUTER_API_KEY` to `.env.example`~~ | **DONE 2026-04-23** — added `OPENROUTER_KIMI_KEY` (primary) with `OPENROUTER_API_KEY` accepted as fallback. |
 | 3 | Create `scripts/sync_readme_stats.py` + `scripts/sync_readme_tree.py` | Markers are in place; sync scripts haven't been built yet (pattern from insider-alpha). |
 | 4 | Add MRX to ticker test set | Materials copied + renamed; first full-pipeline run hasn't been kicked off yet. |
 
@@ -226,6 +226,12 @@ python TickerToThesis.py AAPL "thesis..." --no-gui
 
 ### Materials (2026-04-23)
 - Copied 17 MRX source documents into `2 - report output/MRX/materials/` and renamed to match the prefix-based classifier (`10k_`, `sellside_`, `expert_`, `presentation_`, `transcript_`).
+
+### Source-scout routing fix (2026-04-23)
+- Built `providers/openrouter.py` (`OpenRouterProvider`) and registered it in `ProviderFactory`. Reads `OPENROUTER_KIMI_KEY` (with `OPENROUTER_API_KEY` fallback) and preserves Sonar URL citations.
+- Removed hardcoded `provider="perplexity"` from `_bootstrap_thesis()` and the entire fallback loop from `_run_source_scout()` in `TickerToThesis.py`. Both now route through `ROLE_PROVIDER_CONFIG["source_scout"]` and raise on failure instead of silently degrading to claude/gemini knowledge-only mode.
+- Synced four stale `ROLE_PROVIDERS` defaults in `providers/__init__.py` with the authoritative `config.py` mappings.
+- Added `OPENROUTER_KIMI_KEY` to `.env.example`.
 
 </details>
 

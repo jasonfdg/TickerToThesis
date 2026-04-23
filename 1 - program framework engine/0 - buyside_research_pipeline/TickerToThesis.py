@@ -819,60 +819,39 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
 """
 
     async def _run_source_scout(self, iteration: int, rd_reviews: Dict[int, AgentReport]) -> None:
-        """Run web research agent with fallback chain for robustness.
+        """Run web research agent.
 
-        Fallback order: Perplexity → Gemini → Claude
-        Each provider has different web search capabilities.
+        Runs Perplexity Sonar via OpenRouter (config-driven through
+        ROLE_PROVIDER_CONFIG["source_scout"]). Fails loudly if the
+        provider errors — no silent fallback to knowledge-only models,
+        because the final memo's evidence hierarchy depends on live web
+        sources.
         """
         logger.info(f"Phase 4: Running web research agent...")
 
-        # Fallback chain: try each provider in order until one succeeds
-        fallback_providers = [
-            ("perplexity", "sonar"),   # Primary: Best web search
-            ("gemini", "gemini-2.0-flash"),  # Secondary: Good web capabilities
-            ("claude", "sonnet"),       # Tertiary: Fallback using knowledge
-        ]
+        call = AgentCall(
+            role=AgentRole.SOURCE_SCOUT,
+            system_prompt=self._build_source_scout_system_prompt(),
+            user_prompt=self._build_source_scout_user_prompt(iteration, rd_reviews),
+            iteration=iteration,
+            identifier=f"source_scout_iter{iteration}",
+        )
 
-        source_scout_report = None
-        system_prompt = self._build_source_scout_system_prompt()
-        user_prompt = self._build_source_scout_user_prompt(iteration, rd_reviews)
+        source_scout_report = await self.agent_runner.run_single(call)
 
-        for provider, model in fallback_providers:
-            try:
-                call = AgentCall(
-                    role=AgentRole.SOURCE_SCOUT,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    iteration=iteration,
-                    identifier=f"source_scout_iter{iteration}_{provider}",
-                    provider=provider,
-                    model=model,
-                )
+        if not source_scout_report.is_success:
+            raise RuntimeError(
+                f"Source scout failed at iteration {iteration}: {source_scout_report.error}. "
+                f"Web research is required — no silent fallback."
+            )
 
-                source_scout_report = await self.agent_runner.run_single(call)
+        logger.info(
+            f"  Web Research: {source_scout_report.token_usage.total_tokens:,} tokens"
+        )
 
-                if source_scout_report.is_success:
-                    logger.info(f"  Web Research ({provider}): {source_scout_report.token_usage.total_tokens:,} tokens")
-                    break
-                else:
-                    logger.warning(f"  Web Research failed with {provider}: {source_scout_report.error}")
-
-            except Exception as e:
-                logger.warning(f"  Web Research exception with {provider}: {e}")
-                continue
-
-        # Store in iteration state
-        if source_scout_report:
-            self.state.iterations[iteration].source_scout_report = source_scout_report
-
-            if source_scout_report.is_success:
-                self.report_saver.save_source_scout(source_scout_report, iteration)
-                # Update source file with web research findings
-                await self._update_sources_from_source_scout(source_scout_report, iteration)
-            else:
-                logger.error("  Web Research failed with all providers")
-        else:
-            logger.error("  Web Research: No report generated (all providers failed)")
+        self.state.iterations[iteration].source_scout_report = source_scout_report
+        self.report_saver.save_source_scout(source_scout_report, iteration)
+        await self._update_sources_from_source_scout(source_scout_report, iteration)
 
     async def _update_sources_from_source_scout(
         self,
@@ -899,11 +878,13 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
     async def _bootstrap_thesis(self) -> str:
         """Quick search for bull/bear cases and key debates.
 
-        Runs a single Perplexity search at pipeline start to provide
-        market context. This augments the user's thesis (if provided)
-        or generates a starting thesis (if empty).
+        Runs a single Perplexity Sonar search (via OpenRouter, per
+        ROLE_PROVIDER_CONFIG["source_scout"]) at pipeline start to provide
+        market context. Augments the user's thesis or generates a starting
+        one if empty. Sources are added to WebSource.json.
 
-        Sources from Perplexity are added to WebSource.json.
+        Fails loudly on any provider error — the pipeline cannot produce
+        institutional-quality output without live web research.
 
         Returns:
             Concise summary of current investment debates for the ticker.
@@ -915,42 +896,35 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
             f"(3) What's the most controversial bull and bear case?"
         )
 
-        logger.info("Bootstrapping thesis via Perplexity search...")
+        logger.info("Bootstrapping thesis via Perplexity Sonar (OpenRouter)...")
 
-        try:
-            result = await self.agent_runner.run_single(
-                AgentCall(
-                    role=AgentRole.SOURCE_SCOUT,
-                    system_prompt=(
-                        "You are a buyside research analyst. Find the BIG STORY - the single most "
-                        "transformative force acting on this company over the next 3-5 years. "
-                        "Focus on:\n"
-                        "1. TRANSFORMATIVE FORCES: Consider AI, robotics, Web3, regulatory shifts, or other "
-                        "paradigm changes. Is this an existential threat to the moat, or a transformative opportunity?\n"
-                        "2. STRATEGIC PIVOTS: Is management making a bold bet the market undervalues?\n"
-                        "3. VARIANT VIEW: What does the market believe that might be wrong?\n\n"
-                        "Be specific and narrative-driven. Surface debates, not just facts.\n\n"
-                        "IMPORTANT: Include URLs for all sources you reference. Format citations with full URLs."
-                    ),
-                    user_prompt=query,
-                    provider="perplexity",
-                    model="sonar",
-                )
+        result = await self.agent_runner.run_single(
+            AgentCall(
+                role=AgentRole.SOURCE_SCOUT,
+                system_prompt=(
+                    "You are a buyside research analyst. Find the BIG STORY - the single most "
+                    "transformative force acting on this company over the next 3-5 years. "
+                    "Focus on:\n"
+                    "1. TRANSFORMATIVE FORCES: Consider AI, robotics, Web3, regulatory shifts, or other "
+                    "paradigm changes. Is this an existential threat to the moat, or a transformative opportunity?\n"
+                    "2. STRATEGIC PIVOTS: Is management making a bold bet the market undervalues?\n"
+                    "3. VARIANT VIEW: What does the market believe that might be wrong?\n\n"
+                    "Be specific and narrative-driven. Surface debates, not just facts.\n\n"
+                    "IMPORTANT: Include URLs for all sources you reference. Format citations with full URLs."
+                ),
+                user_prompt=query,
+            )
+        )
+
+        if not result.is_success:
+            raise RuntimeError(
+                f"Thesis bootstrap failed: {result.error}. "
+                f"Source scout must succeed — no silent fallback."
             )
 
-            if result.is_success:
-                logger.info(f"Thesis bootstrap complete: {result.token_usage.total_tokens:,} tokens")
-                # Sources will be extracted and batched in _run_initial_setup()
-                # Store result for later extraction
-                self._bootstrap_report = result
-                return result.content
-            else:
-                logger.warning(f"Thesis bootstrap failed: {result.error}")
-                return ""
-
-        except Exception as e:
-            logger.warning(f"Thesis bootstrap exception: {e}")
-            return ""
+        logger.info(f"Thesis bootstrap complete: {result.token_usage.total_tokens:,} tokens")
+        self._bootstrap_report = result
+        return result.content
 
     async def _extract_bootstrap_sources(self, bootstrap_report: AgentReport) -> List[Dict[str, Any]]:
         """Extract sources from thesis bootstrap (without writing to source file).

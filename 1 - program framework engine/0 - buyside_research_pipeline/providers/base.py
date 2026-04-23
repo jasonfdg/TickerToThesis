@@ -46,7 +46,7 @@ class ProviderConfig:
     model: str = ""
     max_tokens: int = 16000
     temperature: float = 0.7
-    timeout: float = 300.0
+    timeout: float = 1500.0
 
 
 @dataclass

@@ -4,14 +4,12 @@ Providers Module
 Multi-provider AI abstraction for the TickerToThesis pipeline.
 
 Architecture:
-- Analysts 1-2: Claude Sonnet (nuanced reasoning, creative thesis)
-- Analysts 3-4: GPT-4o (quantitative analysis, contrarian thinking)
-- Analysts 5-6: Gemini 1.5 Pro (large context, catalyst analysis)
-- RD Reviews: Claude Sonnet (consistent critique quality)
+- Analysts 1-6: Claude CLI Sonnet (Max subscription, consistent reasoning)
+- RD Reviews 1-3: Claude CLI Sonnet; 4-6: Gemini 2.5 Pro (adversarial voice)
 - Source Scout: Perplexity (real web search)
-- Source Summary: Claude Haiku (fast JSON extraction)
-- Synthesis: Claude Opus (highest quality judgment)
-- Polish: Claude Haiku (mechanical text editing)
+- Source Summary: GPT-4o-mini (fast JSON extraction)
+- Synthesis: Gemini 3 Pro Preview (deep reasoning, independent model)
+- Polish: Claude Sonnet (preserves depth)
 """
 
 import asyncio
@@ -74,16 +72,14 @@ class ProviderType(Enum):
 
 
 # Analyst type -> (provider, model) mapping
-# Types 1-3: Claude Sonnet (nuanced, creative)
-# Types 4-6: GPT-4o (quantitative, contrarian)
-# Gemini excluded from analyst roles (used for synthesis only)
+# All 6 analysts: Claude CLI Sonnet (Max subscription, no API cost)
 ANALYST_PROVIDERS: Dict[int, Tuple[str, str]] = {
-    1: ("claude", "sonnet"),           # Quality Compounders - nuanced reasoning
-    2: ("claude", "sonnet"),           # Imaginative Growth - creative thesis
-    3: ("claude", "sonnet"),           # Fundamental L/S - nuanced analysis
-    4: ("openai", "gpt-4o"),           # Deep Value - contrarian
-    5: ("openai", "gpt-4o"),           # Event-Driven - catalyst analysis
-    6: ("openai", "gpt-4o"),           # Macro-Tactical - quantitative
+    1: ("claude-cli", "sonnet"),       # Quality Compounders
+    2: ("claude-cli", "sonnet"),       # Imaginative Growth
+    3: ("claude-cli", "sonnet"),       # Fundamental L/S
+    4: ("claude-cli", "sonnet"),       # Deep Value
+    5: ("claude-cli", "sonnet"),       # Event-Driven
+    6: ("claude-cli", "sonnet"),       # Macro-Tactical
 }
 
 

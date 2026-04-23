@@ -115,3 +115,38 @@ Output: ${TICKER}_memo_vF.md
 - Rate limiting: 50 RPM semaphore, 30-120s exponential backoff on 529 errors
 - Sequential execution with delays between calls
 - Expect ~1.7M tokens for full 5-iteration run (~$13-15 per ticker)
+
+## Documentation Maintenance (project rule)
+
+**After any change to the pipeline, prompts, provider routing, or output format — in the same turn that makes the change — update both `README.md` and `CHANGELOG.md`.** Do not defer to a later turn. Do not wait for the user to ask.
+
+### CHANGELOG.md (full log, append per session)
+
+Append a bullet under the current session heading (create a new heading if starting a new session). Describe the concrete change and name the files touched. Cover everything including infrastructure and internals — nothing is "too small."
+
+### README.md (curated)
+
+Update the sections affected by the change:
+
+- **Auto-synced content** — do NOT hand-edit anything between `<!-- STATS:KEY --> <!-- /STATS -->` markers or inside the `<!-- TREE:START --> <!-- TREE:END -->` block. These are overwritten by sync scripts on each pipeline run. Your job is to add / remove / reposition markers, not to set the values inside them.
+- Pipeline step descriptions (analyst routing, RD review routing, synthesis model)
+- Output format changes, memo structure, evidence labeling rules
+- Known Limitations, Pending Work trackers
+- **Pending Work:** strike through (`~~N~~`) and add **DONE** note when an item ships; add new items for new follow-ups
+- **Done section:** add a curated bullet for each shipped user-visible item
+
+### When not to edit
+
+If the change is purely internal refactoring that doesn't affect documented behavior, skip README (CHANGELOG still gets a bullet). When uncertain, err on the side of adding a bullet.
+
+### Self-check at end of each turn
+
+"Did I change code or data? Did I update CHANGELOG? Did I update README sections affected by this change?" If yes/yes/yes → commit-ready. If yes/no/* → fix it before moving on.
+
+## Agent Workflow Rules (from AGENT_WORKFLOW.md)
+
+- Always `git fetch origin; git checkout master; git pull origin master` before starting work.
+- Create a new branch per fix. Never modify unrelated files. Stage only files touched by the fix.
+- Read full files before editing. Make the smallest possible change. Preserve logging and CLI behavior.
+- After editing: `python -m py_compile <edited_files>` and inspect `git diff` before pushing.
+- Stop and ask when: required data source is unclear, multiple architectural approaches exist, or fix touches unrelated subsystems.

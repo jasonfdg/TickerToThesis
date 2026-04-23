@@ -19,6 +19,7 @@ class AgentRole(Enum):
     SOURCE_SUMMARY = "source_summary"
     HUMAN_READABLE = "human_readable"
     SOURCE_SCOUT = "source_scout"
+    MATERIALS_ANALYST = "materials_analyst"
 
 
 @dataclass
@@ -173,6 +174,7 @@ class PipelineState:
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
+    materials_brief: str = ""
 
     def __post_init__(self):
         """Initialize iteration states if not provided."""

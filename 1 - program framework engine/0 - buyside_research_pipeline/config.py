@@ -70,6 +70,10 @@ INVESTING_TYPES: Dict[int, Dict[str, str]] = {
     },
 }
 
+# Disable specific analyst types by ID. Disabled analysts are skipped entirely.
+# Set via CLI: --disable-analysts 5,6
+DISABLED_ANALYSTS: set = set()
+
 
 def get_investing_type_path(type_id: int) -> Path:
     """Get the full path for an investing type prompt file."""
@@ -92,7 +96,7 @@ class PipelineConfig:
     parallel_execution: bool = True  # Enable parallel execution across providers
 
     # Pipeline mode: "full" or "light"
-    # Light mode uses gpt-4o-mini for most agents (~$0.20/ticker vs ~$2.50)
+    # Light mode uses Gemini Flash + Claude Sonnet API for most agents
     pipeline_mode: str = "full"
 
     # Pipeline settings
@@ -100,8 +104,8 @@ class PipelineConfig:
     num_analysts: int = 6
 
     # Timeout settings (seconds)
-    single_call_timeout: float = 600.0   # 10 minutes per call
-    parallel_batch_timeout: float = 900.0  # 15 minutes for batch
+    single_call_timeout: float = 1800.0   # 30 minutes per call
+    parallel_batch_timeout: float = 3600.0  # 60 minutes for batch (6x claude-cli)
 
     # Retry settings (tuned for rate limits)
     max_retries: int = 5
@@ -118,9 +122,8 @@ class PipelineConfig:
     # Provider-specific rate limits (parallel execution can exceed single-provider limits)
     provider_rate_limits: Dict[str, int] = field(default_factory=lambda: {
         "claude": 50,
-        "openai": 60,
         "gemini": 60,
-        "perplexity": 20,
+        "openrouter": 60,
     })
 
     def __post_init__(self):
@@ -135,84 +138,82 @@ class PipelineConfig:
 
 # Multi-provider model configuration
 # Analyst type -> (provider, model) mapping
-# 3 Claude + 3 OpenAI (Gemini excluded from analyst roles)
-# NOTE: Iteration 1 uses Gemini 2.5 Flash Lite for all analysts (fast exploration)
+# All 6 analysts: Claude CLI Sonnet (Max subscription, no API cost)
 ANALYST_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
     1: {"provider": "claude-cli", "model": "sonnet"},  # Quality Compounders
     2: {"provider": "claude-cli", "model": "sonnet"},  # Imaginative Growth
     3: {"provider": "claude-cli", "model": "sonnet"},  # Fundamental L/S
-    4: {"provider": "openai", "model": "gpt-4o"},      # Deep Value
-    5: {"provider": "openai", "model": "gpt-4o"},      # Event-Driven
-    6: {"provider": "openai", "model": "gpt-4o"},      # Macro-Tactical
+    4: {"provider": "claude-cli", "model": "sonnet"},  # Deep Value
+    5: {"provider": "claude-cli", "model": "sonnet"},  # Event-Driven
+    6: {"provider": "claude-cli", "model": "sonnet"},  # Macro-Tactical
 }
 
-# Iteration 1 analyst routing: Same models as iterations 2-5 for quality
-# Claude Sonnet (1-3) + GPT-4o (4-6) - no longer using cheap "exploration" models
+# Iteration 1 analyst routing: all Claude CLI Sonnet
 ITERATION_1_ANALYST_CONFIG: Dict[int, Dict[str, str]] = {
     1: {"provider": "claude-cli", "model": "sonnet"},
     2: {"provider": "claude-cli", "model": "sonnet"},
     3: {"provider": "claude-cli", "model": "sonnet"},
-    4: {"provider": "openai", "model": "gpt-4o"},
-    5: {"provider": "openai", "model": "gpt-4o"},
-    6: {"provider": "openai", "model": "gpt-4o"},
+    4: {"provider": "claude-cli", "model": "sonnet"},
+    5: {"provider": "claude-cli", "model": "sonnet"},
+    6: {"provider": "claude-cli", "model": "sonnet"},
 }
 
-# RD Review routing by analyst type (3 Claude + 3 Gemini)
-# Types 1-3: Claude Sonnet (consistency with analyst provider)
-# Types 4-6: Gemini 2.5 Pro (best RD quality from benchmark)
+# RD Review routing by analyst type
+# Types 1-3: Claude CLI Sonnet (consistency with analyst provider)
+# Types 4-6: Gemini 2.5 Pro (independent adversarial voice via different model)
 # Mixed providers enable 2x throughput via parallel rate limits
 RD_REVIEW_PROVIDER_CONFIG: Dict[int, Dict[str, str]] = {
-    1: {"provider": "claude-cli", "model": "sonnet"},       # Quality Compounders
-    2: {"provider": "claude-cli", "model": "sonnet"},       # Imaginative Growth
-    3: {"provider": "claude-cli", "model": "sonnet"},       # Fundamental L/S
-    4: {"provider": "gemini", "model": "gemini-2.5-pro"},   # Deep Value
-    5: {"provider": "gemini", "model": "gemini-2.5-pro"},   # Event-Driven
-    6: {"provider": "gemini", "model": "gemini-2.5-pro"},   # Macro-Tactical
+    1: {"provider": "openrouter", "model": "moonshotai/kimi-k2"},   # Quality Compounders
+    2: {"provider": "openrouter", "model": "moonshotai/kimi-k2"},   # Imaginative Growth
+    3: {"provider": "openrouter", "model": "moonshotai/kimi-k2"},   # Fundamental L/S
+    4: {"provider": "openrouter", "model": "moonshotai/kimi-k2"},   # Deep Value
+    5: {"provider": "openrouter", "model": "moonshotai/kimi-k2"},   # Event-Driven
+    6: {"provider": "openrouter", "model": "moonshotai/kimi-k2"},   # Macro-Tactical
 }
 
 # Role -> (provider, model) mapping for non-analyst calls
 ROLE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
-    "rd_review": {"provider": "gemini", "model": "gemini-3-pro-preview"},  # Gemini 3 Pro (overridden by randomization)
-    "rd_synthesis": {"provider": "gemini", "model": "gemini-3-pro-preview"},  # Upgraded to Gemini 3 Pro for deeper reasoning
-    "source_summary": {"provider": "openai", "model": "gpt-4o-mini"},   # Best JSON validity from benchmark
-    "human_readable": {"provider": "claude", "model": "sonnet"},  # Preserve depth
-    "source_scout": {"provider": "perplexity", "model": "sonar"}, # Real web search
+    "rd_review": {"provider": "openrouter", "model": "moonshotai/kimi-k2"},  # Kimi K2 for cross-model RD critique
+    "rd_synthesis": {"provider": "claude-cli", "model": "sonnet"},           # Claude Sonnet via CLI for synthesis
+    "source_summary": {"provider": "claude-cli", "model": "sonnet"},         # Claude Sonnet for JSON extraction
+    "human_readable": {"provider": "claude", "model": "sonnet"},             # Preserve depth
+    "source_scout": {"provider": "openrouter", "model": "perplexity/sonar"}, # Perplexity Sonar via OpenRouter
 }
 
 # Light mode: Split across 2 fast providers for parallel execution
-# Gemini Flash (1-3) + GPT-4o-mini (4-6)
-# Cost: ~$0.20/ticker vs ~$2.50/ticker for full mode
+# Gemini Flash (1-3) + Claude Sonnet API (4-6)
+# Cost kept low by preferring Gemini Flash (1-3) and Claude Sonnet API (4-6)
 LIGHT_MODE_ANALYST_CONFIG: Dict[int, Dict[str, str]] = {
     1: {"provider": "gemini", "model": "gemini-2.5-flash"},
     2: {"provider": "gemini", "model": "gemini-2.5-flash"},
     3: {"provider": "gemini", "model": "gemini-2.5-flash"},
-    4: {"provider": "openai", "model": "gpt-4o-mini"},
-    5: {"provider": "openai", "model": "gpt-4o-mini"},
-    6: {"provider": "openai", "model": "gpt-4o-mini"},
+    4: {"provider": "claude", "model": "sonnet"},
+    5: {"provider": "claude", "model": "sonnet"},
+    6: {"provider": "claude", "model": "sonnet"},
 }
 
 LIGHT_MODE_RD_REVIEW_CONFIG: Dict[int, Dict[str, str]] = {
     1: {"provider": "gemini", "model": "gemini-2.5-flash"},
     2: {"provider": "gemini", "model": "gemini-2.5-flash"},
     3: {"provider": "gemini", "model": "gemini-2.5-flash"},
-    4: {"provider": "openai", "model": "gpt-4o-mini"},
-    5: {"provider": "openai", "model": "gpt-4o-mini"},
-    6: {"provider": "openai", "model": "gpt-4o-mini"},
+    4: {"provider": "claude", "model": "sonnet"},
+    5: {"provider": "claude", "model": "sonnet"},
+    6: {"provider": "claude", "model": "sonnet"},
 }
 
 # Keep role-based config for non-analyst/RD components
 LIGHT_MODE_PROVIDER_CONFIG: Dict[str, Dict[str, str]] = {
-    "source_summary": {"provider": "openai", "model": "gpt-4o-mini"},
+    "source_summary": {"provider": "claude-cli", "model": "sonnet"},
     "human_readable": {"provider": "gemini", "model": "gemini-2.5-flash"},
-    "source_scout": {"provider": "perplexity", "model": "sonar"},
-    "rd_synthesis": {"provider": "gemini", "model": "gemini-3-pro-preview"},  # Gemini 3 Pro for light mode synthesis too
+    "source_scout": {"provider": "openrouter", "model": "perplexity/sonar"},
+    "rd_synthesis": {"provider": "claude-cli", "model": "sonnet"},
 }
 
 # Light mode fallback chain (used when primary provider is rate-limited)
 # Loops back with increasing backoff: 15s → 30s → 60s
 LIGHT_MODE_FALLBACK_CHAIN: List[Tuple[str, str]] = [
     ("gemini", "gemini-2.5-flash"),
-    ("openai", "gpt-4o-mini"),
+    ("claude", "sonnet"),  # Claude Sonnet API as fallback (paid, pay-per-token)
 ]
 
 # Light mode timing optimizations (faster providers need less delay)
@@ -228,42 +229,37 @@ LIGHT_MODE_DELAYS: Dict[str, float] = {
 # Randomized 2-2-2 Provider Assignment
 # =============================================================================
 
-# Full mode models for randomization (2 of each provider)
+# Full mode models for randomization (all 6 = claude-cli/sonnet)
 FULL_MODE_PROVIDERS: List[Tuple[str, str]] = [
     ("claude-cli", "sonnet"),
     ("claude-cli", "sonnet"),
-    ("openai", "gpt-4o"),
-    ("openai", "gpt-4o"),
-    ("gemini", "gemini-3-pro-preview"),
-    ("gemini", "gemini-3-pro-preview"),
+    ("claude-cli", "sonnet"),
+    ("claude-cli", "sonnet"),
+    ("claude-cli", "sonnet"),
+    ("claude-cli", "sonnet"),
 ]
 
-# Light mode models for randomization (2 of each provider)
-# Note: claude-cli uses sonnet (not haiku) since Max subscription is unlimited
+# Light mode models for randomization (all 6 = claude-cli/sonnet)
 LIGHT_MODE_PROVIDERS: List[Tuple[str, str]] = [
     ("claude-cli", "sonnet"),
     ("claude-cli", "sonnet"),
-    ("openai", "gpt-4o-mini"),
-    ("openai", "gpt-4o-mini"),
-    ("gemini", "gemini-2.5-flash"),
-    ("gemini", "gemini-2.5-flash"),
+    ("claude-cli", "sonnet"),
+    ("claude-cli", "sonnet"),
+    ("claude-cli", "sonnet"),
+    ("claude-cli", "sonnet"),
 ]
 
-# Fallback chain order (full mode): claude-cli → gemini 3 pro → gpt-4o → claude API
+# Fallback chain order (full mode): claude-cli sonnet → claude API sonnet
 FALLBACK_CHAIN_FULL: List[Tuple[str, str]] = [
     ("claude-cli", "sonnet"),
-    ("gemini", "gemini-3-pro-preview"),
-    ("openai", "gpt-4o"),
-    ("claude", "sonnet"),  # Claude API as last resort
+    ("claude", "sonnet"),  # Claude Sonnet API as last resort (paid, pay-per-token)
 ]
 
-# Fallback chain order (light mode): claude-cli → gemini flash → gpt-4o-mini → claude API
-# Note: claude-cli uses sonnet (unlimited via Max), claude API uses haiku (pay-per-token)
+# Fallback chain order (light mode): claude-cli → gemini flash → claude API sonnet
 FALLBACK_CHAIN_LIGHT: List[Tuple[str, str]] = [
     ("claude-cli", "sonnet"),
     ("gemini", "gemini-2.5-flash"),
-    ("openai", "gpt-4o-mini"),
-    ("claude", "haiku"),  # Claude API as last resort (pay-per-token, so use cheap model)
+    ("claude", "sonnet"),  # Claude Sonnet API as last resort (paid, pay-per-token)
 ]
 
 
@@ -396,7 +392,7 @@ def get_effective_provider(
         component: Component identifier (e.g., "analyst_1", "rd_synthesis")
         iteration: Pipeline iteration (affects analyst routing in iteration 1)
         pipeline_mode: "full" or "light" - if None, uses current global mode.
-                       Light mode uses gpt-4o-mini for most agents.
+                       Light mode uses Gemini Flash + Claude Sonnet API for most agents.
 
     Returns:
         Tuple of (provider_type, model)
@@ -462,13 +458,17 @@ def get_effective_provider(
 
 
 def _get_next_version(ticker: str) -> int:
-    """Find the next available version number for a ticker."""
+    """Find the next available version number for a ticker.
+
+    Scans REPORT_OUTPUT/{TICKER}/ for V{n}_{date} subfolders.
+    """
     import re
-    pattern = re.compile(rf"^{ticker}_V(\d+)_")
+    pattern = re.compile(r"^V(\d+)_")
     max_version = 0
 
-    if REPORT_OUTPUT.exists():
-        for folder in REPORT_OUTPUT.iterdir():
+    ticker_root = REPORT_OUTPUT / ticker
+    if ticker_root.exists():
+        for folder in ticker_root.iterdir():
             if folder.is_dir():
                 match = pattern.match(folder.name)
                 if match:
@@ -512,6 +512,7 @@ def _find_todays_folder(ticker: str, mode: str = "full") -> Path | None:
     """Find an existing folder for this ticker with today's date.
 
     This ensures consistency even if the cache is not shared across imports.
+    Scans REPORT_OUTPUT/{TICKER}/ for V{n}_{date}[-light] subfolders.
 
     Args:
         ticker: Stock ticker symbol
@@ -520,16 +521,17 @@ def _find_todays_folder(ticker: str, mode: str = "full") -> Path | None:
     import re
     date_str = _get_current_date()
     suffix = "-light" if mode == "light" else ""
-    pattern = re.compile(rf"^{ticker}_V(\d+)_{date_str}{suffix}$")
+    pattern = re.compile(rf"^V(\d+)_{date_str}{suffix}$")
 
-    if not REPORT_OUTPUT.exists():
+    ticker_root = REPORT_OUTPUT / ticker
+    if not ticker_root.exists():
         return None
 
     # Find highest version folder for today
     best_folder = None
     best_version = 0
 
-    for folder in REPORT_OUTPUT.iterdir():
+    for folder in ticker_root.iterdir():
         if folder.is_dir():
             match = pattern.match(folder.name)
             if match:
@@ -568,12 +570,13 @@ def get_output_dir(ticker: str, create_new: bool = False, mode: str | None = Non
             _output_dir_cache[cache_key] = existing_folder
             return existing_folder
 
-    # Create new versioned folder
+    # Create new versioned folder nested inside ticker folder:
+    # REPORT_OUTPUT/{TICKER}/V{n}_{date}[-light]/
     version = _get_next_version(ticker)
     date_str = _get_current_date()
     suffix = "-light" if effective_mode == "light" else ""
-    dir_name = f"{ticker}_V{version}_{date_str}{suffix}"
-    output_dir = REPORT_OUTPUT / dir_name
+    dir_name = f"V{version}_{date_str}{suffix}"
+    output_dir = REPORT_OUTPUT / ticker / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
     _output_dir_cache[cache_key] = output_dir
 
@@ -583,16 +586,18 @@ def get_output_dir(ticker: str, create_new: bool = False, mode: str | None = Non
 def get_latest_output_dir(ticker: str) -> Path:
     """Get the most recent output directory for a ticker (if exists).
 
-    Returns the newest versioned directory or creates a new one.
+    Returns the newest versioned directory (nested under REPORT_OUTPUT/{TICKER}/)
+    or creates a new one.
     """
     import re
     ticker = ticker.upper()
-    pattern = re.compile(rf"^{ticker}_V(\d+)_")
+    pattern = re.compile(r"^V(\d+)_")
     latest_dir = None
     max_version = 0
 
-    if REPORT_OUTPUT.exists():
-        for folder in REPORT_OUTPUT.iterdir():
+    ticker_root = REPORT_OUTPUT / ticker
+    if ticker_root.exists():
+        for folder in ticker_root.iterdir():
             if folder.is_dir():
                 match = pattern.match(folder.name)
                 if match:
@@ -765,3 +770,14 @@ def _migrate_folder_files(folder: Path, ticker: str, date_str: str) -> None:
                 file_path.rename(new_path)
             except Exception as e:
                 print(f"Failed to rename {file_path.name}: {e}")
+
+
+def get_materials_dir(ticker: str) -> Path:
+    """Get the shared materials directory for external PDF documents.
+
+    Materials live at ticker level: REPORT_OUTPUT/{TICKER}/materials/
+    Shared across all versions of the ticker's output folder.
+    """
+    materials_dir = REPORT_OUTPUT / ticker.upper() / "materials"
+    materials_dir.mkdir(parents=True, exist_ok=True)
+    return materials_dir

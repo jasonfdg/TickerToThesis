@@ -15,6 +15,7 @@ Usage:
 """
 
 import asyncio
+import os
 import logging
 import tempfile
 from pathlib import Path
@@ -91,11 +92,15 @@ class ClaudeCliProvider(BaseProvider):
             logger.debug(f"CLI command: {' '.join(cmd)} (prompt: {len(prompt_content):,} chars)")
 
             # Execute CLI
+            # Strip ANTHROPIC_API_KEY so CLI uses the Max subscription login
+            # instead of falling back to API auth (which may be on a different account)
+            cli_env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=cli_env,
             )
 
             stdout, stderr = await asyncio.wait_for(

@@ -48,25 +48,31 @@ for _env_path in _env_locations:
 try:
     from .agent_runner import AgentCall, AgentRunner, MultiProviderRunner
     from .citation_extractor import CitationExtractor, extract_citations_from_reports
-    from .config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache, set_pipeline_mode, clear_iteration_assignments
+    from .config import INVESTING_TYPES, DISABLED_ANALYSTS, PipelineConfig, get_final_memo_path, get_final_pdf_path, get_materials_dir, clear_output_dir_cache, set_pipeline_mode, clear_iteration_assignments
     from .debate_tracker import DebateHistoryManager
+    from .materials_analyst import run_materials_analyst
+    from .materials_manager import MaterialsManager
     from .models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from .prompt_loader import PromptLoader
     from .progress_tracker import ProgressTracker, PhaseType
     from .report_saver import ReportSaver
     from .source_manager import SourceManager
-    from .translate_export import run_pipeline as run_translate_export
 except ImportError:
     from agent_runner import AgentCall, AgentRunner, MultiProviderRunner
     from citation_extractor import CitationExtractor, extract_citations_from_reports
-    from config import INVESTING_TYPES, PipelineConfig, get_final_memo_path, get_final_pdf_path, clear_output_dir_cache, set_pipeline_mode, clear_iteration_assignments
+    from config import INVESTING_TYPES, DISABLED_ANALYSTS, PipelineConfig, get_final_memo_path, get_final_pdf_path, get_materials_dir, clear_output_dir_cache, set_pipeline_mode, clear_iteration_assignments
     from debate_tracker import DebateHistoryManager
+    from materials_analyst import run_materials_analyst
+    from materials_manager import MaterialsManager
     from models import AgentReport, AgentRole, IterationState, PipelineState, TokenUsage
     from prompt_loader import PromptLoader
     from progress_tracker import ProgressTracker, PhaseType
     from report_saver import ReportSaver
     from source_manager import SourceManager
-    from translate_export import run_pipeline as run_translate_export
+
+# Lazy import for translate_export (requires WeasyPrint/GTK native libs that may
+# not be available on all Windows setups). Imported inside _run_pdf_export().
+run_translate_export = None
 
 # Configure logging
 logging.basicConfig(
@@ -112,6 +118,12 @@ class TickerToThesisPipeline:
 
         self.source_manager = SourceManager(self.ticker, self.prompt_loader)
         self.report_saver = ReportSaver(self.ticker)
+
+        # Materials manager: ingests PDFs from 2 - report output/{TICKER}/materials/
+        self.materials_manager = MaterialsManager(
+            output_dir=self.report_saver.output_dir,
+            materials_dir=get_materials_dir(self.ticker),
+        )
 
         # Initialize debate history tracker for capturing analyst <-> RD evolution
         self.debate_tracker = DebateHistoryManager(
@@ -266,6 +278,15 @@ class TickerToThesisPipeline:
 {self.prompt_loader.memo_engine}
 """
 
+    def _get_materials_block(self) -> str:
+        """Return materials context for prompt injection (empty string if none)."""
+        if self.state.materials_brief:
+            return (
+                "\n## Research Materials Brief\n"
+                f"{self.state.materials_brief}\n---\n"
+            )
+        return self.materials_manager.get_materials_block()
+
     def _build_analyst_user_prompt_v1(self, type_id: int, use_filtered_sources: bool = True) -> str:
         """Build the user prompt for analyst iteration 1 (genesis)."""
         # Use filtered sources to reduce token count (~30-50% reduction)
@@ -275,11 +296,12 @@ class TickerToThesisPipeline:
             source_content = self.source_manager.get_source_content()
 
         market_data = self._get_market_data_injection()
+        materials_block = self._get_materials_block()
 
         return f"""**Analysis Date: {datetime.now().strftime("%B %d, %Y")}**
 
 {market_data}
-
+{materials_block}
 ## Task: Initial Analysis of {self.ticker}
 
 ### Preliminary Thinking (from user)
@@ -317,6 +339,7 @@ This is iteration 1. Be bold. Form your initial view.
             source_content = self.source_manager.get_source_content()
 
         market_data = self._get_market_data_injection()
+        materials_block = self._get_materials_block()
 
         # Get debate history for context (iterations 3+)
         debate_history_md = ""
@@ -328,6 +351,7 @@ This is iteration 1. Be bold. Form your initial view.
         return f"""**Analysis Date: {datetime.now().strftime("%B %d, %Y")}**
 
 {market_data}
+{materials_block}
 {debate_history_md}
 ## Task: Refine Your Analysis of {self.ticker} (Iteration {iteration})
 
@@ -523,7 +547,7 @@ Your job is to sharpen, not to kill. Make this analyst better.
             debate_summary: Pre-extracted analyst positions and debates (if available)
         """
         reports_section = ""
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             if type_id in all_v5_reports:
                 type_name = self.prompt_loader.investing_type_name(type_id)
                 reports_section += f"""
@@ -615,7 +639,7 @@ But also: If your conclusion contradicts the majority without explanation, you'v
         """
         # Build the extraction prompt with all reports
         reports_section = ""
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             if type_id in all_v5_reports:
                 type_name = self.prompt_loader.investing_type_name(type_id)
                 reports_section += f"""
@@ -758,7 +782,7 @@ Output the complete polished memo.
 
         # Extract RD feedback for each analyst type
         rd_feedback_section = ""
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             if type_id in rd_reviews and rd_reviews[type_id].is_success:
                 type_name = self.prompt_loader.investing_type_name(type_id)
                 rd_feedback_section += f"""
@@ -1060,11 +1084,11 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         logger.info("Phase 1: Running 6 parallel analyst calls...")
 
         # Emit agent started events
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             self.progress.emit_agent_started("analyst", type_id, self.ANALYST_NAMES.get(type_id, f"Analyst {type_id}"))
 
         analyst_calls = []
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             call = AgentCall(
                 role=AgentRole.ANALYST,
                 system_prompt=self._build_analyst_system_prompt(type_id),
@@ -1100,7 +1124,7 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
 
         # Build RD review calls (no analyst summaries needed)
         rd_calls = []
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             if type_id in analyst_reports and analyst_reports[type_id].is_success:
                 call = AgentCall(
                     role=AgentRole.RD_REVIEW,
@@ -1114,7 +1138,7 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
                 rd_calls.append(call)
 
         # Emit RD started events before parallel execution
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             self.progress.emit_agent_started("rd_review", type_id, f"RD Review {type_id}")
 
         # Run citation extraction and RD reviews in parallel
@@ -1172,7 +1196,7 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
         # Phase 1: Run 6 parallel analyst refinement calls
         logger.info(f"Phase 1: Running 6 parallel analyst refinement calls...")
         analyst_calls = []
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             # Get previous report and RD feedback
             previous_report = self.report_saver.load_analyst_report(type_id, iteration - 1)
             rd_feedback = self.report_saver.load_rd_review(type_id, iteration - 1)
@@ -1194,17 +1218,18 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
                     f"report={bool(previous_report)}, feedback={bool(rd_feedback)}"
                 )
 
-        # Validate all 6 analysts have data before proceeding
-        if len(analyst_calls) < 6:
-            missing_types = [t for t in range(1, 7) if not any(c.investing_type_id == t for c in analyst_calls)]
+        # Validate all ACTIVE analysts have data before proceeding
+        expected_active = [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]
+        if len(analyst_calls) < len(expected_active):
+            missing_types = [t for t in expected_active if not any(c.investing_type_id == t for c in analyst_calls)]
             raise RuntimeError(
                 f"Cannot proceed with iteration {iteration}: missing reports for analyst types {missing_types}. "
-                f"Expected 6 analysts, got {len(analyst_calls)}. "
+                f"Expected {len(expected_active)} analysts, got {len(analyst_calls)}. "
                 f"Check interim/ directory for missing analyst_*_v{iteration-1}.md or rd_review_*_v{iteration-1}.md files."
             )
 
         # Emit agent started events
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             self.progress.emit_agent_started("analyst", type_id, self.ANALYST_NAMES.get(type_id, f"Analyst {type_id}"))
 
         analyst_reports = await self.agent_runner.run_analyst_batch(analyst_calls)
@@ -1232,7 +1257,7 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
 
         # Build RD review calls (no analyst summaries needed)
         rd_calls = []
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             if type_id in analyst_reports and analyst_reports[type_id].is_success:
                 # Load previous RD feedback for engagement assessment
                 previous_rd_feedback = self.report_saver.load_rd_review(type_id, iteration - 1)
@@ -1249,7 +1274,7 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
                 rd_calls.append(call)
 
         # Emit RD started events before parallel execution
-        for type_id in range(1, 7):
+        for type_id in [t for t in range(1, 7) if t not in DISABLED_ANALYSTS]:
             self.progress.emit_agent_started("rd_review", type_id, f"RD Review {type_id}")
 
         # Run citation extraction and RD reviews in parallel
@@ -1402,6 +1427,17 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
             return {"errors": ["Final memo not found"]}
 
         try:
+            global run_translate_export
+            if run_translate_export is None:
+                try:
+                    from translate_export import run_pipeline as _rtx
+                    run_translate_export = _rtx
+                except Exception as e:
+                    logger.warning(
+                        f"PDF export unavailable (WeasyPrint/GTK not installed): {e}. "
+                        f"Skipping PDF generation; final memo is still saved as markdown."
+                    )
+                    return {"errors": [f"PDF export unavailable: {e}"]}
             results = await run_translate_export(
                 target=str(memo_path),
                 translate=True,   # Translate to Chinese
@@ -1479,6 +1515,42 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
 
         return sources_added
 
+    async def _run_materials_analyst(self) -> None:
+        """Process any user-supplied materials (PDFs/HTMs) and build a brief.
+
+        Two phases:
+          1. Parallel Sonnet sub-agents per doc type (earnings, SEC, expert, etc.)
+          2. Sonnet consolidator merges extracts into one ~40K-char brief
+
+        The brief is stored on self.state.materials_brief and injected into
+        all analyst prompts via _get_materials_block().
+        """
+        if not self.materials_manager.has_materials:
+            logger.info("No materials found — skipping materials analyst phase")
+            return
+
+        n_docs = self.materials_manager.process_materials()
+        logger.info(f"Processed {n_docs} materials documents")
+
+        materials_report = await run_materials_analyst(
+            materials_dir=self.materials_manager.materials_dir,
+            agent_runner=self.agent_runner,
+            ticker=self.ticker,
+        )
+
+        if materials_report and materials_report.is_success:
+            self.state.materials_brief = materials_report.content
+            # Save brief next to other outputs for inspection
+            brief_path = self.report_saver.output_dir / "materials_brief.md"
+            brief_path.write_text(materials_report.content, encoding="utf-8")
+            logger.info(
+                f"Materials brief generated: {len(materials_report.content):,} chars "
+                f"→ {brief_path}"
+            )
+        else:
+            err = materials_report.error if materials_report else "no report returned"
+            logger.warning(f"Materials analyst failed: {err} — falling back to raw materials block")
+
     async def run(self) -> str:
         """
         Run the complete pipeline.
@@ -1524,6 +1596,9 @@ Focus on finding evidence that will sharpen the next iteration of analyst work.
             await self._run_initial_setup()
             # Estimate genesis cost (rough: ~2K tokens at $0.003/1K)
             self.progress.end_genesis(tokens=2000, cost=0.006)
+
+            # Process any user-supplied materials (PDFs/HTMs) BEFORE analysts run
+            await self._run_materials_analyst()
 
             # Run iteration 1 (genesis)
             self.progress.start_iteration(1)
@@ -1684,8 +1759,27 @@ Examples:
         action="store_true",
         help="Send newsletter email when publishing (requires --publish)",
     )
+    parser.add_argument(
+        "--disable-analysts",
+        type=str,
+        default="",
+        help="Comma-separated analyst IDs to disable (e.g., '2,3,4,5,6' to run only analyst 1)",
+    )
 
     args = parser.parse_args()
+
+    # Apply disabled analysts
+    if args.disable_analysts:
+        try:
+            import config as _config
+            disabled = {int(x.strip()) for x in args.disable_analysts.split(",") if x.strip()}
+            invalid = {d for d in disabled if d not in range(1, 7)}
+            if invalid:
+                parser.error(f"Invalid analyst IDs in --disable-analysts: {invalid}. Must be 1-6.")
+            _config.DISABLED_ANALYSTS.update(disabled)
+            logger.warning(f"Analysts disabled: {sorted(disabled)} — only running {sorted(set(range(1,7)) - disabled)}")
+        except ValueError as e:
+            parser.error(f"Could not parse --disable-analysts '{args.disable_analysts}': {e}")
 
     # Validate iterations (clamp to 5-10 range)
     iterations = max(5, min(10, args.iterations))

@@ -835,9 +835,9 @@ But also: If your conclusion contradicts the majority without explanation, you'v
 
 async def main():
     if len(sys.argv) < 3:
-        print("Usage: python resume_pipeline.py <TICKER> <START_ITERATION> [TOTAL_ITERATIONS] [--light]")
+        print("Usage: python resume_pipeline.py <TICKER> <START_ITERATION> [TOTAL_ITERATIONS] [--light] [--no-gui] [--port PORT]")
         print("Example: python resume_pipeline.py WU 3 5")
-        print("Example: python resume_pipeline.py HOOD 6 10 --light  # Resume from iter 6, run until iter 10, light mode")
+        print("Example: python resume_pipeline.py HOOD 6 10 --light")
         sys.exit(1)
 
     ticker = sys.argv[1]
@@ -847,15 +847,25 @@ async def main():
     num_iterations = 5
     pipeline_mode = "full"
     preliminary_thinking = "Resuming analysis..."
+    no_gui = False
+    port = 8765
 
     remaining_args = sys.argv[3:]
-    for i, arg in enumerate(remaining_args):
+    i = 0
+    while i < len(remaining_args):
+        arg = remaining_args[i]
         if arg == "--light":
             pipeline_mode = "light"
+        elif arg == "--no-gui":
+            no_gui = True
+        elif arg == "--port" and i + 1 < len(remaining_args):
+            port = int(remaining_args[i + 1])
+            i += 1
         elif arg.isdigit():
             num_iterations = int(arg)
         elif not arg.startswith("--"):
             preliminary_thinking = arg
+        i += 1
 
     # Clamp iterations to valid range
     num_iterations = max(5, min(10, num_iterations))
@@ -863,14 +873,46 @@ async def main():
     if pipeline_mode == "light":
         logger.info("Running in LIGHT MODE (gpt-4o-mini for most agents)")
 
+    # Launch dashboard GUI unless disabled
+    dashboard_server = None
+    emitter = None
+    if not no_gui:
+        try:
+            from dashboard.emitter import ProgressEmitter
+            from dashboard.server import start_dashboard_server
+
+            emitter = ProgressEmitter()
+            dashboard_server = start_dashboard_server(
+                emitter=emitter,
+                port=port,
+                open_browser=True,
+            )
+            logger.info(f"Dashboard started at http://127.0.0.1:{dashboard_server.port}")
+            emitter.emit("pipeline_started", {
+                "ticker": ticker.upper(),
+                "iterations": num_iterations,
+                "resumed_from": start_iteration,
+                "mode": pipeline_mode,
+            })
+        except ImportError as e:
+            logger.warning(f"Dashboard not available: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to start dashboard: {e}")
+
     pipeline = ResumablePipeline(
         ticker,
         preliminary_thinking,
         num_iterations=num_iterations,
         pipeline_mode=pipeline_mode,
     )
-    final_path = await pipeline.resume_from(start_iteration)
-    print(f"\nSuccess! Final memo: {final_path}")
+    try:
+        final_path = await pipeline.resume_from(start_iteration)
+        if emitter:
+            emitter.emit("pipeline_complete", {"ticker": ticker.upper(), "path": str(final_path)})
+        print(f"\nSuccess! Final memo: {final_path}")
+    finally:
+        if dashboard_server:
+            dashboard_server.stop()
 
 
 if __name__ == "__main__":

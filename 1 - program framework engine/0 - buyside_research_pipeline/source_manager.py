@@ -156,8 +156,8 @@ class SourceManager:
             except Exception as e:
                 logger.warning(f"Failed to create backup: {e}")
 
-        # Atomic rename: temp -> target
-        temp_path.rename(self.source_file_path)
+        # Atomic rename: temp -> target (use replace() for cross-platform overwrite on Windows)
+        temp_path.replace(self.source_file_path)
 
         self._cache = data
         logger.info(
